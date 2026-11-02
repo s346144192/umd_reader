@@ -1,0 +1,14 @@
+# 构建输出与中间文件
+build/
+.vs/
+*.user
+*.VC.db
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.exp
+
+# 运行数据（书架索引、书籍数据、背景图片）
+data/
