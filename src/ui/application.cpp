@@ -356,6 +356,95 @@ std::wstring TrimNoteText(const std::wstring& text) {
     return text.substr(begin, end - begin);
 }
 
+// 命令文本归一化：全角冒号、逗号、连字符、波浪号与数字转为半角。
+// 逐字符替换，长度保持不变，便于用同一位置在原文本中切分标注文字。
+std::wstring NormalizeCommandText(const std::wstring& text) {
+    std::wstring result = text;
+    for (wchar_t& character : result) {
+        switch (character) {
+        case 0xFF1A:  // ：
+            character = L':';
+            break;
+        case 0xFF0C:  // ，
+            character = L',';
+            break;
+        case 0xFF0D:  // －
+            character = L'-';
+            break;
+        case 0xFF5E:  // ～
+            character = L'~';
+            break;
+        default:
+            break;
+        }
+        if (character >= 0xFF10 && character <= 0xFF19) {
+            character = static_cast<wchar_t>(L'0' + (character - 0xFF10));
+        }
+    }
+    return result;
+}
+
+// 提取文本中的第一个连续整数，找不到时返回 false。
+bool ExtractFirstNumber(const std::wstring& text, uint32_t& value) {
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] < L'0' || text[i] > L'9') {
+            continue;
+        }
+        size_t end = i;
+        while (end < text.size() && text[end] >= L'0' && text[end] <= L'9') {
+            ++end;
+        }
+        const unsigned long long parsed = wcstoull(text.substr(i, end - i).c_str(), nullptr, 10);
+        value = parsed > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(parsed);
+        return true;
+    }
+    return false;
+}
+
+// 提取文本中的前两个连续整数，用于解析「正文范围 A - B」这类范围说明。
+bool ExtractTwoNumbers(const std::wstring& text, uint32_t& first, uint32_t& second) {
+    int count = 0;
+    for (size_t i = 0; i < text.size() && count < 2; ++i) {
+        if (text[i] < L'0' || text[i] > L'9') {
+            continue;
+        }
+        size_t end = i;
+        while (end < text.size() && text[end] >= L'0' && text[end] <= L'9') {
+            ++end;
+        }
+        const unsigned long long parsed =
+            wcstoull(text.substr(i, end - i).c_str(), nullptr, 10);
+        const uint32_t value =
+            parsed > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(parsed);
+        if (count == 0) {
+            first = value;
+        } else {
+            second = value;
+        }
+        ++count;
+        i = end - 1;
+    }
+    return count == 2;
+}
+
+// 判断回复是否只是在表达「准备继续读取正文」的意向，而没有给出读取命令。
+// 仅针对简短回复，避免把完整的讲解误判为读取请求。
+bool WantsMoreText(const std::wstring& text) {
+    if (text.size() > 100) {
+        return false;
+    }
+    static const wchar_t* kKeywords[] = {
+        L"读取", L"读一段", L"读几处", L"读几个", L"往后读", L"往下读",
+        L"继续读", L"再读", L"找一段", L"往后找", L"往回找", L"往前找",
+    };
+    for (const wchar_t* keyword : kKeywords) {
+        if (text.find(keyword) != std::wstring::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 D2D1_COLOR_F NoteTextColor() {
     return D2D1::ColorF(0xC62828);
 }
@@ -1126,6 +1215,21 @@ void Application::OnMouseMove(int xPixels, int yPixels) {
     mouseX_ = static_cast<float>(xPixels) / scale;
     mouseY_ = static_cast<float>(yPixels) / scale;
     mouseInside_ = true;
+    if (chatPanelResizing_) {
+        const float minimum = 300.0f;
+        const float maximum = std::max(minimum, std::min(760.0f, widthDip_ - 420.0f));
+        chatPanelWidth_ = std::clamp(widthDip_ - mouseX_, minimum, maximum);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (chatScrollDragging_) {
+        ScrollChatFromY(mouseY_);
+        return;
+    }
+    if (panelScrollDragging_) {
+        ScrollPanelFromY(mouseY_);
+        return;
+    }
     if (chatSelecting_) {
         UpdateChatSelection(mouseX_, mouseY_);
         return;
@@ -1156,6 +1260,13 @@ void Application::OnMouseMove(int xPixels, int yPixels) {
     if (newHover != hoverIndex_) {
         hoverIndex_ = newHover;
         InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    // 指向阅读助手面板左边缘时显示横向调整光标。
+    if (panel_ == PanelMode::Chat) {
+        const float splitterX = widthDip_ - PanelWidth();
+        SetCursor(LoadCursorW(nullptr, std::abs(mouseX_ - splitterX) <= 4.0f ? IDC_SIZEWE
+                                                                            : IDC_ARROW));
     }
 
     if (selecting_) {
@@ -1255,6 +1366,7 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
                     hit->kind == HitKind::ChatModel ||
                     hit->kind == HitKind::ChatProtocolOpenAi ||
                     hit->kind == HitKind::ChatProtocolAnthropic ||
+                    hit->kind == HitKind::AiThinkingLevel ||
                     hit->kind == HitKind::AiSettingsSave ||
                     hit->kind == HitKind::AiSettingsClose);
         if (!insideSettings) {
@@ -1322,7 +1434,7 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
         }
         if (panel_ != PanelMode::None) {
             // 点击右侧面板内部的空白区域不应关闭面板，只有面板外的点击才收起。
-            const bool insidePanel = x >= widthDip_ - kPanelWidth && y >= kReaderToolbarHeight;
+            const bool insidePanel = x >= widthDip_ - PanelWidth() && y >= kReaderToolbarHeight;
             if (!insidePanel) {
                 ChangePanel(PanelMode::None);
             }
@@ -1391,6 +1503,11 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
         if (action.kind == HitKind::OpenAiSettings) {
             // AI 接口设置作为更上层弹框打开，全局设置窗口保持可见。
             OpenAiSettings();
+            return;
+        }
+        if (action.kind == HitKind::OpenShortcutSettings) {
+            // 快捷键设置作为更上层弹框打开，全局设置窗口保持可见。
+            OpenShortcutSettings();
             return;
         }
         if (action.kind == HitKind::OpenDataFolder) {
@@ -1476,14 +1593,6 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
     }
     case HitKind::BackToShelf:
         CloseBook();
-        break;
-    case HitKind::OpenMenu:
-        // 菜单按钮：在按钮下方弹出；再次点击同一按钮收起菜单。
-        if (menuVisible_) {
-            CloseMenu();
-        } else {
-            OpenMenu(140.0f, kReaderToolbarHeight + 4.0f, ReaderMenuEntries(false, x, y));
-        }
         break;
     case HitKind::OpenToc:
         ChangePanel(panel_ == PanelMode::Toc ? PanelMode::None : PanelMode::Toc);
@@ -1700,6 +1809,11 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
         InvalidateRect(hwnd_, nullptr, FALSE);
         break;
     }
+    case HitKind::AiThinkingLevel:
+        // 思考等级即时生效，随「保存」写入设置。
+        library_.Settings().aiThinkingLevel = std::clamp(action.index, 0, 3);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        break;
     case HitKind::ChatInput:
         chatFocus_ = ChatFocus::Message;
         StartCaretBlink();
@@ -1711,6 +1825,20 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
         break;
     case HitKind::ChatStop:
         StopAiRequest();
+        break;
+    case HitKind::ChatPanelSplitter:
+        chatPanelResizing_ = true;
+        SetCapture(hwnd_);
+        break;
+    case HitKind::ChatScrollbar:
+        chatScrollDragging_ = true;
+        SetCapture(hwnd_);
+        ScrollChatFromY(y);
+        break;
+    case HitKind::PanelScrollbar:
+        panelScrollDragging_ = true;
+        SetCapture(hwnd_);
+        ScrollPanelFromY(y);
         break;
     case HitKind::OpenAiSettings:
         OpenAiSettings();
@@ -1734,6 +1862,17 @@ void Application::OnLeftButtonDown(int xPixels, int yPixels) {
     case HitKind::ChatCopyMessage:
         CopyChatMessage(action.index);
         break;
+    case HitKind::ChatThinkingToggle: {
+        if (chatThinkingExpanded_.count(action.index) > 0) {
+            chatThinkingExpanded_.erase(action.index);
+        } else {
+            chatThinkingExpanded_.insert(action.index);
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        // 折叠状态会改变气泡高度，立即重绘以同步命中区域。
+        UpdateWindow(hwnd_);
+        break;
+    }
     case HitKind::OpenGestureBar: {
         const uint32_t offset = CurrentGlobalOffset();
         panel_ = PanelMode::None;
@@ -1826,7 +1965,7 @@ void Application::OnMouseWheel(int xPixels, int yPixels, int delta) {
         return;
     }
 
-    if (panel_ != PanelMode::None && x >= widthDip_ - kPanelWidth && y >= kReaderToolbarHeight) {
+    if (panel_ != PanelMode::None && x >= widthDip_ - PanelWidth() && y >= kReaderToolbarHeight) {
         panelScroll_ = std::clamp(panelScroll_ - steps * 72.0f, 0.0f, panelScrollMax_);
         InvalidateRect(hwnd_, nullptr, FALSE);
         // 滚动后控件位置变化，立即重绘以同步命中区域，避免点击落到滚动前的位置。
@@ -1878,6 +2017,34 @@ void Application::OnLeftButtonUp(int xPixels, int yPixels) {
     }
     if (scrollDragging_) {
         scrollDragging_ = false;
+        if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (chatPanelResizing_) {
+        chatPanelResizing_ = false;
+        if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+        }
+        // 面板宽度决定正文可用宽度，拖动结束后统一重排一次。
+        ClearLayoutCache();
+        InvalidatePageCache();
+        RebuildPagination(CurrentGlobalOffset());
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (chatScrollDragging_) {
+        chatScrollDragging_ = false;
+        if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (panelScrollDragging_) {
+        panelScrollDragging_ = false;
         if (GetCapture() == hwnd_) {
             ReleaseCapture();
         }
@@ -2019,9 +2186,17 @@ void Application::StopCaretBlink() {
 }
 
 D2D1_RECT_F Application::ReaderPanelContentRect() const {
-    const float panelLeft = widthDip_ - kPanelWidth;
+    const float panelLeft = widthDip_ - PanelWidth();
     return D2D1::RectF(panelLeft + 20.0f, kReaderToolbarHeight + kPanelHeaderHeight,
                        widthDip_ - 20.0f, heightDip_ - 20.0f);
+}
+
+float Application::PanelWidth() const {
+    if (panel_ != PanelMode::Chat) {
+        return kPanelWidth;
+    }
+    const float maximum = std::max(300.0f, std::min(760.0f, widthDip_ - 420.0f));
+    return std::clamp(chatPanelWidth_, 300.0f, maximum);
 }
 
 D2D1_RECT_F Application::SearchBoxRect() const {
@@ -2048,7 +2223,7 @@ D2D1_RECT_F Application::ChatFieldRect(ChatFocus field) const {
 }
 
 D2D1_RECT_F Application::AiChatEntryRect() const {
-    const float panelReserve = panel_ != PanelMode::None ? kPanelWidth : 0.0f;
+    const float panelReserve = panel_ != PanelMode::None ? PanelWidth() : 0.0f;
     const float availableWidth = widthDip_ - panelReserve;
     constexpr float kEntryWidth = 112.0f;
     constexpr float kEntryHeight = 30.0f;
@@ -2060,7 +2235,7 @@ D2D1_RECT_F Application::AiChatEntryRect() const {
 
 D2D1_RECT_F Application::AiSettingsPanelRect() const {
     constexpr float kSettingsWidth = 460.0f;
-    constexpr float kSettingsHeight = 400.0f;
+    constexpr float kSettingsHeight = 460.0f;
     const float left = (widthDip_ - kSettingsWidth) * 0.5f;
     const float top = (heightDip_ - kSettingsHeight) * 0.5f;
     return D2D1::RectF(left, top, left + kSettingsWidth, top + kSettingsHeight);
@@ -2090,6 +2265,71 @@ D2D1_RECT_F Application::ChatConversationRect() const {
     // 顶部为接口信息行与会话栏，对话内容区从其下方开始。
     return D2D1::RectF(contentRect.left, contentRect.top + 74.0f, contentRect.right,
                        contentRect.bottom - 148.0f);
+}
+
+D2D1_RECT_F Application::ChatScrollbarTrackRect() const {
+    const D2D1_RECT_F rect = ChatConversationRect();
+    constexpr float kTrackWidth = 8.0f;
+    return D2D1::RectF(rect.right - kTrackWidth - 2.0f, rect.top + 2.0f, rect.right - 2.0f,
+                       rect.bottom - 2.0f);
+}
+
+void Application::ScrollChatFromY(float y) {
+    if (chatScrollMax_ <= 0.0f) {
+        return;
+    }
+    const D2D1_RECT_F track = ChatScrollbarTrackRect();
+    const float trackHeight = track.bottom - track.top;
+    const float contentHeight = trackHeight + chatScrollMax_;
+    const float thumbHeight = std::max(28.0f, trackHeight * trackHeight / contentHeight);
+    const float usable = std::max(1.0f, trackHeight - thumbHeight);
+    const float ratio = std::clamp((y - track.top - thumbHeight * 0.5f) / usable, 0.0f, 1.0f);
+    chatScroll_ = ratio * chatScrollMax_;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+D2D1_RECT_F Application::PanelScrollbarTrackRect() const {
+    const D2D1_RECT_F contentRect = ReaderPanelContentRect();
+    float top = contentRect.top;
+    // 书签列表位于「添加当前页书签」按钮行下方。
+    if (panel_ == PanelMode::Bookmarks) {
+        top += 48.0f;
+    }
+    constexpr float kTrackWidth = 8.0f;
+    return D2D1::RectF(contentRect.right - kTrackWidth, top + 2.0f, contentRect.right,
+                       contentRect.bottom - 2.0f);
+}
+
+void Application::DrawPanelScrollbar(const ThemeColors& colors) {
+    if ((panel_ != PanelMode::Toc && panel_ != PanelMode::Bookmarks) || panelScrollMax_ <= 0.0f) {
+        return;
+    }
+    const D2D1_RECT_F track = PanelScrollbarTrackRect();
+    renderer_.FillRoundedRect(track, 4.0f, colors.divider);
+    const float trackHeight = track.bottom - track.top;
+    const float contentHeight = trackHeight + panelScrollMax_;
+    const float thumbHeight = std::max(28.0f, trackHeight * trackHeight / contentHeight);
+    const float ratio = panelScroll_ / panelScrollMax_;
+    const float thumbTop = track.top + (trackHeight - thumbHeight) * ratio;
+    renderer_.FillRoundedRect(
+        D2D1::RectF(track.left, thumbTop, track.right, thumbTop + thumbHeight), 4.0f,
+        colors.accent);
+    AddHit(D2D1::RectF(track.left - 2.0f, track.top, track.right + 2.0f, track.bottom),
+           HitKind::PanelScrollbar);
+}
+
+void Application::ScrollPanelFromY(float y) {
+    if (panelScrollMax_ <= 0.0f) {
+        return;
+    }
+    const D2D1_RECT_F track = PanelScrollbarTrackRect();
+    const float trackHeight = track.bottom - track.top;
+    const float contentHeight = trackHeight + panelScrollMax_;
+    const float thumbHeight = std::max(28.0f, trackHeight * trackHeight / contentHeight);
+    const float usable = std::max(1.0f, trackHeight - thumbHeight);
+    const float ratio = std::clamp((y - track.top - thumbHeight * 0.5f) / usable, 0.0f, 1.0f);
+    panelScroll_ = ratio * panelScrollMax_;
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 D2D1_RECT_F Application::ChatStatusRect() const {
@@ -2265,8 +2505,10 @@ void Application::InsertInputText(const std::wstring& value) {
     if (text == nullptr || value.empty()) {
         return;
     }
-    const size_t begin = SelectionBegin();
-    const size_t end = SelectionEnd();
+    // 光标可能因清空输入框、切换焦点而落后于实际长度，先钳制再拼接，避免越界抛出异常。
+    const size_t length = text->size();
+    const size_t begin = std::min(SelectionBegin(), length);
+    const size_t end = std::min(SelectionEnd(), length);
     *text = text->substr(0, begin) + value + text->substr(end);
     inputCaret_ = begin + value.size();
     inputAnchor_ = inputCaret_;
@@ -2280,6 +2522,9 @@ void Application::DeleteInputBackward() {
     if (text == nullptr || text->empty()) {
         return;
     }
+    // 光标越界时先归位，避免按下标访问越界。
+    inputCaret_ = std::min(inputCaret_, text->size());
+    inputAnchor_ = std::min(inputAnchor_, text->size());
     if (HasInputSelection()) {
         const size_t begin = SelectionBegin();
         const size_t end = SelectionEnd();
@@ -2348,8 +2593,13 @@ bool Application::CopyInputSelection() {
     if (text == nullptr || !HasInputSelection()) {
         return false;
     }
-    const std::wstring selected =
-        text->substr(SelectionBegin(), SelectionEnd() - SelectionBegin());
+    const size_t length = text->size();
+    const size_t begin = std::min(SelectionBegin(), length);
+    const size_t end = std::min(SelectionEnd(), length);
+    if (begin >= end) {
+        return false;
+    }
+    const std::wstring selected = text->substr(begin, end - begin);
     if (selected.empty()) {
         return false;
     }
@@ -2678,6 +2928,15 @@ void Application::UpdateImePosition() {
     candidate.dwStyle = CFS_CANDIDATEPOS;
     candidate.ptCurrentPos = point;
     ImmSetCandidateWindow(context, &candidate);
+
+    // 组合字符串使用微软雅黑、常规字重与较大字号，避免拼音字母过小过粗。
+    LOGFONTW compositionFont{};
+    compositionFont.lfHeight = -static_cast<LONG>(std::lround(20.0f * scale));
+    compositionFont.lfWeight = FW_NORMAL;
+    compositionFont.lfCharSet = DEFAULT_CHARSET;
+    compositionFont.lfQuality = CLEARTYPE_QUALITY;
+    wcscpy_s(compositionFont.lfFaceName, L"Microsoft YaHei");
+    ImmSetCompositionFontW(context, &compositionFont);
     ImmReleaseContext(hwnd_, context);
 }
 
@@ -3309,6 +3568,7 @@ void Application::DrawShelf(const ThemeColors& colors) {
         DrawCategoryManager(colors);
         DrawCategoryPicker(colors);
         DrawAiSettings(colors);
+        DrawShortcutSettings(colors);
         DrawInputCaret(colors);
         return;
     }
@@ -3349,6 +3609,7 @@ void Application::DrawShelf(const ThemeColors& colors) {
     DrawCategoryManager(colors);
     DrawCategoryPicker(colors);
     DrawAiSettings(colors);
+    DrawShortcutSettings(colors);
     DrawInputCaret(colors);
 }
 
@@ -3588,7 +3849,7 @@ void Application::DrawShelfSettings(const ThemeColors& colors) {
                        ParseHexColor(L"#000000", 0.35f));
 
     constexpr float kPanelWidth = 460.0f;
-    constexpr float kPanelHeight = 440.0f;
+    constexpr float kPanelHeight = 520.0f;
     const float left = (widthDip_ - kPanelWidth) * 0.5f;
     const float top = (heightDip_ - kPanelHeight) * 0.5f;
     const D2D1_RECT_F panel =
@@ -3653,17 +3914,28 @@ void Application::DrawShelfSettings(const ThemeColors& colors) {
     renderer_.DrawLine(D2D1::Point2F(left + 24.0f, top + 300.0f),
                        D2D1::Point2F(left + kPanelWidth - 24.0f, top + 300.0f),
                        colors.divider, 1.0f);
-    renderer_.DrawTextBlock(L"数据目录",
+    renderer_.DrawTextBlock(L"快捷键",
                             D2D1::RectF(left + 24.0f, top + 308.0f,
                                         left + kPanelWidth - 24.0f, top + 328.0f),
                             formats.caption.Get(), colors.secondaryText);
-    DrawButton(L"打开数据目录",
+    DrawButton(L"设置快捷键",
                D2D1::RectF(left + 24.0f, top + 334.0f, left + 164.0f, top + 372.0f),
+               HitKind::OpenShortcutSettings, colors, false, false);
+
+    renderer_.DrawLine(D2D1::Point2F(left + 24.0f, top + 388.0f),
+                       D2D1::Point2F(left + kPanelWidth - 24.0f, top + 388.0f),
+                       colors.divider, 1.0f);
+    renderer_.DrawTextBlock(L"数据目录",
+                            D2D1::RectF(left + 24.0f, top + 396.0f,
+                                        left + kPanelWidth - 24.0f, top + 416.0f),
+                            formats.caption.Get(), colors.secondaryText);
+    DrawButton(L"打开数据目录",
+               D2D1::RectF(left + 24.0f, top + 422.0f, left + 164.0f, top + 460.0f),
                HitKind::OpenDataFolder, colors, false, false);
 
     DrawButton(L"关闭",
-               D2D1::RectF(left + kPanelWidth - 124.0f, top + 382.0f,
-                           left + kPanelWidth - 24.0f, top + 420.0f),
+               D2D1::RectF(left + kPanelWidth - 124.0f, top + 470.0f,
+                           left + kPanelWidth - 24.0f, top + 508.0f),
                HitKind::ShelfSettingsClose, colors, false, false);
 }
 
@@ -3861,9 +4133,6 @@ void Application::DrawReader(const ThemeColors& colors) {
 
     DrawButton(L"返回书架", D2D1::RectF(16.0f, 15.0f, 132.0f, 49.0f), HitKind::BackToShelf,
                colors, false, false);
-    // 菜单入口：弹出与右键菜单使用同一套条目。
-    DrawButton(L"菜单", D2D1::RectF(140.0f, 15.0f, 200.0f, 49.0f), HitKind::OpenMenu, colors,
-               false, menuVisible_);
 
     struct ToolbarItem {
         const wchar_t* label;
@@ -4025,7 +4294,7 @@ void Application::DrawReader(const ThemeColors& colors) {
                             formats.captionRight.Get(), colors.secondaryText);
 
     // 右下角显示阅读视图比例，便于按视图比例选择背景图片。
-    const float viewWidth = widthDip_ - (panel_ != PanelMode::None ? kPanelWidth : 0.0f);
+    const float viewWidth = widthDip_ - (panel_ != PanelMode::None ? PanelWidth() : 0.0f);
     const float viewHeight =
         std::max(1.0f, heightDip_ - kReaderToolbarHeight - kReaderFooterHeight);
     renderer_.DrawTextBlock(ViewRatioLabel(viewWidth, viewHeight),
@@ -4033,8 +4302,8 @@ void Application::DrawReader(const ThemeColors& colors) {
                                         widthDip_ - 64.0f, heightDip_ - 10.0f),
                             formats.captionRight.Get(), colors.secondaryText);
 
-    // 阅读区底部居中：AI 对话入口。
-    DrawButton(L"AI 对话", AiChatEntryRect(), HitKind::OpenChat, colors, false,
+    // 阅读区底部居中：阅读助手入口。
+    DrawButton(L"阅读助手", AiChatEntryRect(), HitKind::OpenChat, colors, false,
                panel_ == PanelMode::Chat);
 
     DrawReaderScrollbar(colors);
@@ -4074,51 +4343,55 @@ void Application::DrawReaderBackground(const ThemeColors& colors) {
     }
 }
 
-std::vector<Application::MenuEntry> Application::ReaderMenuEntries(bool contextual, float x,
-                                                                  float y) {
+std::vector<Application::MenuEntry> Application::ReaderMenuEntries(float x, float y) {
     std::vector<MenuEntry> entries;
-    if (contextual && panel_ == PanelMode::Chat && PointInside(ChatConversationRect(), x, y)) {
-        // 对话内右键：优先提供复制选中文字与复制整条消息。
-        const data::ChatSession* session = ActiveChatSession();
-        if (session != nullptr) {
-            const uint32_t begin = std::min(chatSelectionStart_, chatSelectionEnd_);
-            const uint32_t end = std::max(chatSelectionStart_, chatSelectionEnd_);
-            if (chatSelectionMessage_ >= 0 &&
-                chatSelectionMessage_ < static_cast<int>(session->messages.size()) && begin < end) {
-                entries.push_back(
-                    MenuEntry{L"copy-chat-selection", L"复制选中文字", -1, std::wstring()});
-            }
-            const D2D1_RECT_F conversation = ChatConversationRect();
-            std::vector<ChatBubble> bubbles;
-            BuildChatBubbles(conversation, bubbles);
-            const float offset = conversation.top - chatScroll_;
-            for (const ChatBubble& bubble : bubbles) {
-                if (bubble.messageIndex < 0) {
-                    continue;
+    if (panel_ == PanelMode::Toc) {
+        // 目录右键：只在目录面板范围内响应，按不同规则重新提取纯文本章节，最多三级（集 → 章 → 节）。
+        const D2D1_RECT_F panelRect =
+            D2D1::RectF(widthDip_ - PanelWidth(), kReaderToolbarHeight, widthDip_, heightDip_);
+        const data::BookRecord* record = library_.Find(activeBookId_);
+        if (PointInside(panelRect, x, y) && record != nullptr && record->formatType == 0) {
+            const std::wstring current = record->chapterMode.empty() ? L"auto" : record->chapterMode;
+            const auto labelFor = [&current](const wchar_t* mode, const wchar_t* base) {
+                std::wstring label = base;
+                if (current == mode) {
+                    label += L"（当前）";
                 }
-                if (!PointInside(OffsetRect(bubble.bubble, 0.0f, offset), x, y)) {
-                    continue;
-                }
-                entries.push_back(MenuEntry{L"copy-chat-message", L"复制整条消息",
-                                            bubble.messageIndex, std::wstring()});
-                break;
-            }
+                return label;
+            };
+            entries.push_back(MenuEntry{L"chapters-auto", labelFor(L"auto", L"自动识别章节"), -1,
+                                        std::wstring()});
+            entries.push_back(MenuEntry{L"chapters-hui", labelFor(L"hui", L"按「回」提取"), -1,
+                                        std::wstring()});
+            entries.push_back(MenuEntry{L"chapters-zhang", labelFor(L"zhang", L"按「章」提取"), -1,
+                                        std::wstring()});
+            entries.push_back(MenuEntry{L"chapters-jie", labelFor(L"jie", L"按「节」提取"), -1,
+                                        std::wstring()});
+            entries.push_back(MenuEntry{L"chapters-jizhang",
+                                        labelFor(L"jizhang", L"按「集」「章」提取"), -1,
+                                        std::wstring()});
+            entries.push_back(MenuEntry{L"chapters-jizhangjie",
+                                        labelFor(L"jizhangjie", L"按「集」「章」「节」提取"), -1,
+                                        std::wstring()});
+            return entries;
         }
-        entries.push_back(MenuEntry{L"chat-new-session", L"新建对话", -1, std::wstring()});
+    }
+    // 右键菜单只保留「复制」，避免分散阅读注意力。
+    if (panel_ == PanelMode::Chat && PointInside(ChatConversationRect(), x, y)) {
+        const uint32_t begin = std::min(chatSelectionStart_, chatSelectionEnd_);
+        const uint32_t end = std::max(chatSelectionStart_, chatSelectionEnd_);
+        const data::ChatSession* session = ActiveChatSession();
+        if (session != nullptr && chatSelectionMessage_ >= 0 &&
+            chatSelectionMessage_ < static_cast<int>(session->messages.size()) &&
+            begin < end) {
+            entries.push_back(MenuEntry{L"copy-chat-selection", L"复制", -1,
+                                        std::wstring()});
+        }
         return entries;
     }
-    if (contextual && selectionActive_) {
-        entries.push_back(MenuEntry{L"copy-selection", L"复制选中文字", -1, std::wstring()});
+    if (selectionActive_) {
+        entries.push_back(MenuEntry{L"copy-selection", L"复制", -1, std::wstring()});
     }
-    entries.push_back(MenuEntry{L"bookmark", L"添加书签", -1, std::wstring()});
-    entries.push_back(MenuEntry{L"search", L"全文检索", -1, std::wstring()});
-    entries.push_back(MenuEntry{L"settings", L"阅读设置", -1, std::wstring()});
-    entries.push_back(MenuEntry{L"chat", panel_ == PanelMode::Chat ? L"关闭 AI 对话" : L"AI 对话",
-                                -1, std::wstring()});
-    entries.push_back(
-        MenuEntry{L"speech", speaking_ ? L"停止朗读" : L"朗读当前页", -1, std::wstring()});
-    entries.push_back(MenuEntry{L"shortcuts", L"快捷键映射", -1, std::wstring()});
-    entries.push_back(MenuEntry{L"back-shelf", L"返回书架", -1, std::wstring()});
     return entries;
 }
 
@@ -4189,24 +4462,18 @@ void Application::ExecuteMenuEntry(const MenuEntry& entry) {
         CopySelection();
     } else if (entry.id == L"copy-chat-selection") {
         CopyChatSelection();
-    } else if (entry.id == L"copy-chat-message") {
-        CopyChatMessage(entry.index);
-    } else if (entry.id == L"chat-new-session") {
-        NewChatSession();
-    } else if (entry.id == L"bookmark") {
-        AddBookmark();
-    } else if (entry.id == L"search") {
-        ChangePanel(PanelMode::Search);
-    } else if (entry.id == L"settings") {
-        ChangePanel(PanelMode::Settings);
-    } else if (entry.id == L"chat") {
-        ChangePanel(panel_ == PanelMode::Chat ? PanelMode::None : PanelMode::Chat);
-    } else if (entry.id == L"speech") {
-        ToggleSpeech();
-    } else if (entry.id == L"shortcuts") {
-        OpenShortcutSettings();
-    } else if (entry.id == L"back-shelf") {
-        CloseBook();
+    } else if (entry.id == L"chapters-auto") {
+        ApplyChapterMode(L"auto");
+    } else if (entry.id == L"chapters-hui") {
+        ApplyChapterMode(L"hui");
+    } else if (entry.id == L"chapters-zhang") {
+        ApplyChapterMode(L"zhang");
+    } else if (entry.id == L"chapters-jie") {
+        ApplyChapterMode(L"jie");
+    } else if (entry.id == L"chapters-jizhang") {
+        ApplyChapterMode(L"jizhang");
+    } else if (entry.id == L"chapters-jizhangjie") {
+        ApplyChapterMode(L"jizhangjie");
     } else if (entry.id == L"shelf-add") {
         OpenFileDialog();
     } else if (entry.id == L"shelf-settings") {
@@ -4224,12 +4491,105 @@ void Application::ExecuteMenuEntry(const MenuEntry& entry) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void Application::ApplyChapterMode(const std::wstring& mode) {
+    data::BookRecord* record = library_.Find(activeBookId_);
+    if (record == nullptr || activeBook_.formatType != 0) {
+        ShowStatus(L"仅纯文本文件支持重新提取章节");
+        return;
+    }
+    const std::wstring normalized = mode.empty() ? L"auto" : mode;
+    if (record->chapterMode == normalized) {
+        ShowStatus(L"当前已使用该章节提取方式");
+        return;
+    }
+    std::vector<umd::Chapter> chapters =
+        normalized == L"auto"
+            ? umd::DetectDefaultChapters(activeBook_.content)
+            : umd::DetectChaptersByUnits(activeBook_.content, umd::ChapterUnitsForMode(normalized));
+    if (chapters.empty()) {
+        ShowStatus(L"未识别到符合条件的章节");
+        return;
+    }
+
+    const uint32_t globalOffset = CurrentGlobalOffset();
+    const std::vector<umd::Chapter> previous = activeBook_.chapters;
+    // 旧章节内的偏移先换算为全书偏移，再定位到新章节，保证书签、高亮、标注不丢失。
+    const auto relocate = [&chapters](uint32_t global, int& chapterIndex, uint32_t& localOffset) {
+        chapterIndex = 0;
+        for (size_t i = 0; i < chapters.size(); ++i) {
+            if (chapters[i].charOffset <= global) {
+                chapterIndex = static_cast<int>(i);
+            } else {
+                break;
+            }
+        }
+        const uint32_t base = chapters[static_cast<size_t>(chapterIndex)].charOffset;
+        localOffset = global > base ? global - base : 0;
+    };
+    const auto previousBase = [&previous](int chapterIndex) {
+        if (chapterIndex < 0 || chapterIndex >= static_cast<int>(previous.size())) {
+            return static_cast<uint32_t>(0);
+        }
+        return previous[static_cast<size_t>(chapterIndex)].charOffset;
+    };
+
+    for (data::Highlight& highlight : record->highlights) {
+        int chapterIndex = 0;
+        uint32_t localOffset = 0;
+        relocate(previousBase(highlight.chapterIndex) + highlight.start, chapterIndex, localOffset);
+        highlight.chapterIndex = chapterIndex;
+        highlight.start = localOffset;
+    }
+    for (data::Note& note : record->notes) {
+        int chapterIndex = 0;
+        uint32_t localOffset = 0;
+        relocate(previousBase(note.chapterIndex) + note.start, chapterIndex, localOffset);
+        note.chapterIndex = chapterIndex;
+        note.start = localOffset;
+    }
+    for (data::Bookmark& bookmark : record->bookmarks) {
+        int chapterIndex = 0;
+        uint32_t localOffset = 0;
+        relocate(previousBase(bookmark.chapterIndex) + bookmark.charOffset, chapterIndex,
+                 localOffset);
+        bookmark.chapterIndex = chapterIndex;
+        bookmark.charOffset = localOffset;
+    }
+
+    activeBook_.chapters = std::move(chapters);
+    record->chapters.clear();
+    for (const umd::Chapter& chapter : activeBook_.chapters) {
+        data::ChapterInfo info;
+        info.title = chapter.title;
+        info.charOffset = chapter.charOffset;
+        info.charLength = chapter.charLength;
+        record->chapters.push_back(std::move(info));
+    }
+    record->chapterMode = normalized;
+
+    if (!searchResults_.empty()) {
+        searchResults_.clear();
+        searchStatus_ = L"章节已重新提取，请重新检索";
+    }
+
+    std::wstring saveError;
+    library_.SaveBook(activeBookId_, saveError);
+    ClearLayoutCache();
+    InvalidatePageCache();
+    activeChapterRaw_.clear();
+    activeChapterRawChapter_ = -1;
+    RebuildPagination(globalOffset);
+    ShowStatus(L"已重新提取 " + std::to_wstring(activeBook_.chapters.size()) + L" 个章节");
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void Application::OnRightButtonDown(int xPixels, int yPixels) {
     const float scale = renderer_.DpiScale();
     const float x = static_cast<float>(xPixels) / scale;
     const float y = static_cast<float>(yPixels) / scale;
     // 弹框打开时不响应右键菜单。
-    if (chatSessionPickerVisible_ || fontPickerVisible_ || aiSettingsVisible_) {
+    if (chatSessionPickerVisible_ || fontPickerVisible_ || aiSettingsVisible_ ||
+        shortcutSettingsVisible_) {
         return;
     }
     if (view_ == ViewMode::Shelf &&
@@ -4241,7 +4601,7 @@ void Application::OnRightButtonDown(int xPixels, int yPixels) {
         return;
     }
     if (view_ == ViewMode::Reader) {
-        OpenMenu(x, y, ReaderMenuEntries(true, x, y));
+        OpenMenu(x, y, ReaderMenuEntries(x, y));
     } else {
         OpenMenu(x, y, ShelfMenuEntries());
     }
@@ -4252,12 +4612,23 @@ void Application::DrawReaderPanel(const ThemeColors& colors) {
         return;
     }
     const TextFormats& formats = renderer_.Formats();
-    const float left = widthDip_ - kPanelWidth;
+    const float left = widthDip_ - PanelWidth();
     const D2D1_RECT_F panelRect =
         D2D1::RectF(left, kReaderToolbarHeight, widthDip_, heightDip_);
     renderer_.FillRect(panelRect, colors.surface);
     renderer_.DrawLine(D2D1::Point2F(left, kReaderToolbarHeight),
                        D2D1::Point2F(left, heightDip_), colors.divider, 1.0f);
+    // 阅读助手面板左侧分割条：拖动可调整面板宽度。
+    if (panel_ == PanelMode::Chat) {
+        const D2D1_RECT_F splitter =
+            D2D1::RectF(left - 5.0f, kReaderToolbarHeight, left + 5.0f, heightDip_);
+        if (chatPanelResizing_ || IsHovered(splitter)) {
+            renderer_.FillRoundedRect(D2D1::RectF(left - 1.5f, kReaderToolbarHeight + 24.0f,
+                                                  left + 1.5f, heightDip_ - 24.0f),
+                                      1.5f, colors.accent);
+        }
+        AddHit(splitter, HitKind::ChatPanelSplitter);
+    }
 
     std::wstring title;
     switch (panel_) {
@@ -4286,7 +4657,7 @@ void Application::DrawReaderPanel(const ThemeColors& colors) {
         title = L"添加标注";
         break;
     case PanelMode::Chat:
-        title = L"AI 对话";
+        title = L"阅读助手";
         break;
     default:
         return;
@@ -4365,6 +4736,7 @@ void Application::DrawTocPanel(const ThemeColors& colors, const D2D1_RECT_F& con
         y += itemHeight;
     }
     EndClip();
+    DrawPanelScrollbar(colors);
 }
 
 void Application::DrawBookmarksPanel(const ThemeColors& colors, const D2D1_RECT_F& contentRect) {
@@ -4430,6 +4802,7 @@ void Application::DrawBookmarksPanel(const ThemeColors& colors, const D2D1_RECT_
         y += itemHeight;
     }
     EndClip();
+    DrawPanelScrollbar(colors);
 }
 
 void Application::DrawSearchPanel(const ThemeColors& colors, const D2D1_RECT_F& contentRect) {
@@ -5185,9 +5558,10 @@ void Application::DrawChatPanel(const ThemeColors& colors, const D2D1_RECT_F& co
     DrawButton(L"会话", D2D1::RectF(sessionBar.left, sessionBar.top, sessionBar.left + 56.0f,
                                     sessionBar.top + 30.0f),
                HitKind::ChatSessionOpen, colors, false, chatSessionPickerVisible_);
-    DrawButton(L"新建", D2D1::RectF(sessionBar.right - 56.0f, sessionBar.top, sessionBar.right,
-                                    sessionBar.top + 30.0f),
-               HitKind::ChatSessionNew, colors, false, false);
+    DrawPlainButton(L"新建",
+                    D2D1::RectF(sessionBar.right - 56.0f, sessionBar.top, sessionBar.right,
+                                sessionBar.top + 30.0f),
+                    HitKind::ChatSessionNew, colors);
     const data::ChatSession* session = ActiveChatSession();
     const std::wstring sessionTitle =
         session != nullptr && !session->title.empty() ? session->title : std::wstring(L"新对话");
@@ -5295,6 +5669,7 @@ void Application::NewChatSession() {
     }
     aiAnswer_.clear();
     aiDraft_.clear();
+    ResetInputCaretToEnd();
     aiStatus_.clear();
     chatScroll_ = 0.0f;
     chatSessionPickerVisible_ = false;
@@ -5403,12 +5778,14 @@ void Application::CopyChatMessage(int messageIndex) {
 void Application::BuildChatBubbles(const D2D1_RECT_F& rect, std::vector<ChatBubble>& bubbles) {
     bubbles.clear();
     const TextFormats& formats = renderer_.Formats();
-    const float available = std::max(120.0f, rect.right - rect.left - 24.0f);
+    // 右侧预留滚动条的位置。
+    const float available = std::max(120.0f, rect.right - rect.left - 34.0f);
     const float bubbleWidth = available * kChatBubbleWidthRatio;
     const float textWidth = std::max(48.0f, bubbleWidth - kChatBubblePadding * 2.0f);
     float cursor = 8.0f;
 
-    const auto appendBubble = [&](const std::wstring& text, bool isUser, int messageIndex) {
+    const auto appendBubble = [&](const std::wstring& text, bool isUser, int messageIndex,
+                                  const std::wstring& thinking) {
         ChatBubble bubble;
         bubble.messageIndex = messageIndex;
         bubble.isUser = isUser;
@@ -5421,15 +5798,42 @@ void Application::BuildChatBubbles(const D2D1_RECT_F& rect, std::vector<ChatBubb
             bubble.layout->GetMetrics(&metrics);
             textHeight = std::max(18.0f, metrics.height);
         }
-        bubble.height = kChatBubbleHeader + textHeight + kChatBubblePadding;
+        // 思考内容默认折叠，展开后占用独立高度。
+        float thinkingBlock = 0.0f;
+        if (!thinking.empty()) {
+            bubble.thinking = thinking;
+            bubble.thinkingExpanded = chatThinkingExpanded_.count(messageIndex) > 0;
+            bubble.thinkingLayout =
+                renderer_.CreateLayout(thinking, formats.caption.Get(), textWidth, 100000.0f);
+            if (bubble.thinkingLayout) {
+                bubble.thinkingLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                DWRITE_TEXT_METRICS metrics{};
+                bubble.thinkingLayout->GetMetrics(&metrics);
+                bubble.thinkingHeight = std::max(18.0f, metrics.height);
+            }
+            thinkingBlock = 18.0f;
+            if (bubble.thinkingExpanded) {
+                thinkingBlock += bubble.thinkingHeight + 6.0f;
+            }
+        }
+        bubble.height = kChatBubbleHeader + thinkingBlock + textHeight + kChatBubblePadding;
         bubble.top = cursor;
         // 用户消息右对齐，AI 消息左对齐。
         const float left =
             isUser ? rect.right - 12.0f - bubbleWidth : rect.left + 12.0f;
         bubble.bubble = D2D1::RectF(left, cursor, left + bubbleWidth, cursor + bubble.height);
+        bubble.thinkingToggleRect =
+            D2D1::RectF(left + kChatBubblePadding, cursor + kChatBubbleHeader,
+                        left + kChatBubblePadding + 100.0f, cursor + kChatBubbleHeader + 18.0f);
+        if (thinkingBlock > 0.0f) {
+            bubble.thinkingRect =
+                D2D1::RectF(left + kChatBubblePadding, cursor + kChatBubbleHeader + 18.0f,
+                            left + bubbleWidth - kChatBubblePadding,
+                            cursor + kChatBubbleHeader + 18.0f + bubble.thinkingHeight);
+        }
         bubble.textRect = D2D1::RectF(
-            bubble.bubble.left + kChatBubblePadding, cursor + kChatBubbleHeader,
-            bubble.bubble.right - kChatBubblePadding,
+            left + kChatBubblePadding, cursor + kChatBubbleHeader + thinkingBlock,
+            left + bubbleWidth - kChatBubblePadding,
             cursor + bubble.height - kChatBubblePadding * 0.4f);
         cursor += bubble.height + kChatBubbleGap;
         bubbles.push_back(std::move(bubble));
@@ -5439,13 +5843,14 @@ void Application::BuildChatBubbles(const D2D1_RECT_F& rect, std::vector<ChatBubb
     if (session != nullptr) {
         for (size_t i = 0; i < session->messages.size(); ++i) {
             const data::ChatMessage& message = session->messages[i];
-            appendBubble(message.text, message.role == L"user", static_cast<int>(i));
+            appendBubble(message.text, message.role == L"user", static_cast<int>(i),
+                         message.thinking);
         }
     }
     if (aiStreaming_) {
         const std::wstring streamingText =
             aiAnswer_.empty() ? std::wstring(L"正在生成…") : aiAnswer_;
-        appendBubble(streamingText, false, -1);
+        appendBubble(streamingText, false, -1, aiThinking_);
     }
 }
 
@@ -5633,10 +6038,23 @@ void Application::DrawChatConversation(const D2D1_RECT_F& rect, const ThemeColor
                                 formats.caption.Get(),
                                 bubble.isUser ? colors.accent : colors.secondaryText);
         if (bubble.messageIndex >= 0) {
-            DrawButton(L"复制",
-                       D2D1::RectF(bubbleRect.right - 50.0f, bubbleRect.top + 4.0f,
-                                   bubbleRect.right - 8.0f, bubbleRect.top + 22.0f),
-                       HitKind::ChatCopyMessage, colors, false, false, bubble.messageIndex);
+            DrawPlainButton(L"复制",
+                            D2D1::RectF(bubbleRect.right - 50.0f, bubbleRect.top + 4.0f,
+                                        bubbleRect.right - 8.0f, bubbleRect.top + 22.0f),
+                            HitKind::ChatCopyMessage, colors, bubble.messageIndex);
+        }
+        if (!bubble.thinking.empty()) {
+            // 思考过程：点击标题行展开或折叠。
+            const D2D1_RECT_F toggleRect = OffsetRect(bubble.thinkingToggleRect, 0.0f, offset);
+            renderer_.DrawTextBlock(bubble.thinkingExpanded ? L"思考过程 ▴" : L"思考过程 ▾",
+                                    toggleRect, formats.caption.Get(), colors.secondaryText);
+            AddHit(toggleRect, HitKind::ChatThinkingToggle, bubble.messageIndex);
+            if (bubble.thinkingExpanded && bubble.thinkingLayout) {
+                const D2D1_RECT_F thinkingRect = OffsetRect(bubble.thinkingRect, 0.0f, offset);
+                renderer_.DrawLayout(bubble.thinkingLayout.Get(),
+                                     D2D1::Point2F(thinkingRect.left, thinkingRect.top),
+                                     colors.secondaryText);
+            }
         }
         if (bubble.layout) {
             DrawChatSelection(bubble, textRect, colors);
@@ -5645,6 +6063,22 @@ void Application::DrawChatConversation(const D2D1_RECT_F& rect, const ThemeColor
         }
     }
     EndClip();
+
+    // 对话内容滚动条：内容超出可视高度时显示，可拖动定位。
+    if (chatScrollMax_ > 0.0f) {
+        const D2D1_RECT_F track = ChatScrollbarTrackRect();
+        renderer_.FillRoundedRect(track, 4.0f, colors.divider);
+        const float trackHeight = track.bottom - track.top;
+        const float contentHeight = trackHeight + chatScrollMax_;
+        const float thumbHeight = std::max(28.0f, trackHeight * trackHeight / contentHeight);
+        const float ratio = chatScroll_ / chatScrollMax_;
+        const float thumbTop = track.top + (trackHeight - thumbHeight) * ratio;
+        renderer_.FillRoundedRect(
+            D2D1::RectF(track.left, thumbTop, track.right, thumbTop + thumbHeight), 4.0f,
+            colors.accent);
+        AddHit(D2D1::RectF(track.left - 2.0f, track.top, track.right + 2.0f, track.bottom),
+               HitKind::ChatScrollbar);
+    }
 }
 
 D2D1_RECT_F Application::ChatSessionPickerPanelRect() const {
@@ -5954,13 +6388,26 @@ void Application::DrawAiSettings(const ThemeColors& colors) {
         AddHit(boxRect, field.kind);
     }
 
+    // 思考等级：关闭 / 低 / 中 / 高，按协议分别映射到 reasoning_effort 与 thinking 预算。
+    renderer_.DrawTextBlock(L"思考等级",
+                            D2D1::RectF(panel.left + 24.0f, panel.top + 326.0f,
+                                        panel.right - 24.0f, panel.top + 346.0f),
+                            formats.caption.Get(), colors.secondaryText);
+    static const wchar_t kThinkingLabels[4][8] = {L"关闭", L"低", L"中", L"高"};
+    for (int i = 0; i < 4; ++i) {
+        const float left = panel.left + 24.0f + static_cast<float>(i) * 82.0f;
+        DrawButton(kThinkingLabels[i],
+                   D2D1::RectF(left, panel.top + 350.0f, left + 74.0f, panel.top + 382.0f),
+                   HitKind::AiThinkingLevel, colors, false, settings.aiThinkingLevel == i, i);
+    }
+
     DrawButton(L"保存",
-               D2D1::RectF(panel.left + 24.0f, panel.top + 344.0f, panel.left + 144.0f,
-                           panel.top + 382.0f),
+               D2D1::RectF(panel.left + 24.0f, panel.top + 400.0f, panel.left + 144.0f,
+                           panel.top + 438.0f),
                HitKind::AiSettingsSave, colors, true, false);
     DrawButton(L"关闭",
-               D2D1::RectF(panel.right - 124.0f, panel.top + 344.0f, panel.right - 24.0f,
-                            panel.top + 382.0f),
+               D2D1::RectF(panel.right - 124.0f, panel.top + 400.0f, panel.right - 24.0f,
+                           panel.top + 438.0f),
                HitKind::AiSettingsClose, colors, false, false);
 }
 
@@ -6104,6 +6551,18 @@ void Application::DrawButton(const std::wstring& label, const D2D1_RECT_F& rect,
             renderer_.StrokeRoundedRect(rect, 9.0f, colors.accent, 1.0f);
         }
     }
+    AddHit(rect, kind, index, value);
+}
+
+void Application::DrawPlainButton(const std::wstring& label, const D2D1_RECT_F& rect,
+                                  HitKind kind, const ThemeColors& colors, int index,
+                                  const std::wstring& value) {
+    const TextFormats& formats = renderer_.Formats();
+    if (IsHovered(rect)) {
+        renderer_.FillRoundedRect(rect, 9.0f, colors.surfaceAlt);
+    }
+    // 常规字重，避免次要操作显得过于突出。
+    renderer_.DrawTextBlock(label, rect, formats.centered.Get(), colors.text);
     AddHit(rect, kind, index, value);
 }
 
@@ -6569,6 +7028,8 @@ void Application::SendAiMessage() {
         return;
     }
     aiDraft_.clear();
+    // 清空输入框后必须把光标归位，否则下一次输入（尤其输入法上屏）会按旧下标插入。
+    ResetInputCaretToEnd();
     StartAiRequest(prompt);
 }
 
@@ -6608,8 +7069,9 @@ void Application::StartAiRequest(const std::wstring& prompt) {
     for (const data::ChatMessage& message : session->messages) {
         history.emplace_back(message.role, message.text);
     }
-    // 新一轮提问重置自动读取次数。
-    aiFollowUpUsed_ = false;
+    // 新一轮提问重置自动读取轮数。
+    aiFollowUpCount_ = 0;
+    aiLastReadEnd_ = CurrentGlobalOffset();
     LaunchAiRequest(std::move(history));
 }
 
@@ -6630,6 +7092,7 @@ void Application::LaunchAiRequest(std::vector<std::pair<std::wstring, std::wstri
         return;
     }
     aiAnswer_.clear();
+    aiThinking_.clear();
     aiStatus_ = L"正在生成…";
     aiStreaming_ = true;
     aiCancel_ = false;
@@ -6638,6 +7101,7 @@ void Application::LaunchAiRequest(std::vector<std::pair<std::wstring, std::wstri
     {
         std::lock_guard<std::mutex> lock(aiMutex_);
         aiPendingText_.clear();
+        aiThinkingPending_.clear();
         aiPendingStatus_.clear();
         aiPendingDone_ = false;
     }
@@ -6648,9 +7112,10 @@ void Application::LaunchAiRequest(std::vector<std::pair<std::wstring, std::wstri
     const std::wstring url = baseUrl + (anthropic ? L"/messages" : L"/chat/completions");
     const std::wstring systemPrompt = BuildAiSystemPrompt();
     aiThread_ = std::thread([this, url, key = settings.aiApiKey, model = settings.aiModel,
-                             protocol = settings.aiProtocol, systemPrompt,
+                             protocol = settings.aiProtocol,
+                             thinkingLevel = settings.aiThinkingLevel, systemPrompt,
                              history = std::move(history), target = hwnd_]() {
-        RunAiRequest(url, key, model, protocol, systemPrompt, history, target);
+        RunAiRequest(url, key, model, protocol, thinkingLevel, systemPrompt, history, target);
     });
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -6668,6 +7133,8 @@ void Application::StopAiRequest() {
         // 把尚未分发的增量并入当前回复，停止前的输出仍然保留。
         aiAnswer_ += aiPendingText_;
         aiPendingText_.clear();
+        aiThinking_ += aiThinkingPending_;
+        aiThinkingPending_.clear();
         aiPendingStatus_.clear();
         aiPendingDone_ = false;
     }
@@ -6688,6 +7155,17 @@ void Application::PushAiChunk(const std::wstring& text, HWND target) {
     PostMessageW(target, kAiStreamMessage, 0, 0);
 }
 
+void Application::PushAiThinking(const std::wstring& text, HWND target) {
+    if (text.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(aiMutex_);
+        aiThinkingPending_ += text;
+    }
+    PostMessageW(target, kAiStreamMessage, 0, 0);
+}
+
 void Application::PushAiDone(const std::wstring& status, HWND target) {
     {
         std::lock_guard<std::mutex> lock(aiMutex_);
@@ -6699,11 +7177,13 @@ void Application::PushAiDone(const std::wstring& status, HWND target) {
 
 void Application::AppendAiChunks() {
     std::wstring chunk;
+    std::wstring thinking;
     std::wstring status;
     bool done = false;
     {
         std::lock_guard<std::mutex> lock(aiMutex_);
         chunk.swap(aiPendingText_);
+        thinking.swap(aiThinkingPending_);
         if (aiPendingDone_) {
             done = true;
             aiPendingDone_ = false;
@@ -6713,11 +7193,17 @@ void Application::AppendAiChunks() {
     if (!chunk.empty()) {
         aiAnswer_ += chunk;
     }
+    if (!thinking.empty()) {
+        aiThinking_ += thinking;
+    }
     if (done) {
         aiStreaming_ = false;
         if (!aiAnswer_.empty()) {
             CommitAiAnswer(true);
-            aiStatus_ = status.empty() ? std::wstring(L"生成完成") : status;
+            // 自动读取正文会立即发起下一轮请求，此时保持「正在生成」状态。
+            if (!aiStreaming_) {
+                aiStatus_ = status.empty() ? std::wstring(L"生成完成") : status;
+            }
         } else {
             aiStatus_ = status.empty() ? std::wstring(L"没有收到回复内容") : status;
         }
@@ -6731,10 +7217,10 @@ void Application::CommitAiAnswer(bool allowFollowUp) {
     }
     const std::wstring raw = aiAnswer_;
     aiAnswer_.clear();
-    // 先执行回复中的控制命令（跳转、高亮、标注、读取章节），展示文本中不保留命令。
+    // 先执行回复中的控制命令（跳转、高亮、标注、读取章节或范围），展示文本中不保留命令。
     std::wstring cleaned;
-    int readChapter = -1;
-    ProcessAiCommands(raw, cleaned, readChapter);
+    AiReadRange readRange;
+    ProcessAiCommands(raw, cleaned, readRange);
     if (cleaned.empty()) {
         cleaned = L"（已执行阅读操作）";
     }
@@ -6745,15 +7231,32 @@ void Application::CommitAiAnswer(bool allowFollowUp) {
     data::ChatMessage reply;
     reply.role = L"assistant";
     reply.text = cleaned;
+    reply.thinking = aiThinking_;
+    aiThinking_.clear();
     reply.createdAt = util::CurrentUnixSeconds();
     session->updatedAt = reply.createdAt;
     session->messages.push_back(std::move(reply));
     activeChatSessionId_ = session->id;
     SaveChatState();
-    // 每轮提问只自动读取一次章节，避免命令循环。
-    if (allowFollowUp && readChapter >= 0 && !aiFollowUpUsed_ && !aiCancel_) {
-        aiFollowUpUsed_ = true;
-        StartAiFollowUp(readChapter);
+    // 模型可连续读取正文：每轮回复中的读取命令都会自动追加正文并继续请求，
+    // 直到回复不再要求读取或达到轮数上限，避免命令循环。
+    constexpr int kMaxAiFollowUps = 8;
+    constexpr uint32_t kIntentReadChars = 6000;
+    if (allowFollowUp && !aiCancel_ && aiFollowUpCount_ < kMaxAiFollowUps) {
+        uint32_t nextStart = 0;
+        uint32_t nextLength = 0;
+        if (readRange.valid) {
+            nextStart = readRange.start;
+            nextLength = readRange.length;
+        } else if (WantsMoreText(cleaned)) {
+            // 模型只说明要读取却未给出范围时，从上次读取结束处继续读取一段正文。
+            nextStart = aiLastReadEnd_;
+            nextLength = kIntentReadChars;
+        }
+        if (nextLength > 0) {
+            ++aiFollowUpCount_;
+            StartAiFollowUp(nextStart, nextLength);
+        }
     }
 }
 
@@ -6787,11 +7290,17 @@ std::wstring Application::BuildAiSystemPrompt() const {
         prompt += L"当前位置附近文本：\n" + content.substr(begin, end - begin) + L"\n";
     }
     prompt +=
-        L"可用命令（写在回复中即可，程序会自动执行并从显示内容中移除）：\n"
+        L"偏移量为全文中的字符下标（从 0 开始）。\n"
+        L"可用命令（写在回复中即可，程序会自动执行并从显示内容中移除；一条回复可包含多条命令）：\n"
         L"[[goto:全书字符偏移]] 跳转到指定位置\n"
         L"[[highlight:起始偏移:长度:#RRGGBB]] 添加高亮\n"
         L"[[note:起始偏移:长度:标注文字]] 添加标注\n"
-        L"[[read:章节序号]] 读取该章全文（序号从 0 开始，正文会自动追加到对话中）\n";
+        L"[[read:章节序号]] 读取该章全文（序号从 0 开始）\n"
+        L"[[range:起始偏移:字符数]] 读取全文指定范围（单次最多 24000 字符，正文会自动追加到对话中）\n"
+        L"[[search:关键词]] 在全书检索关键词并读取其附近正文\n"
+        L"读取正文时必须输出上述读取命令，程序会自动追加正文并继续请求；"
+        L"不要只写「【正文范围 A - B】」这类说明，也不要要求用户输入「继续」。"
+        L"回答较长时请连续输出直到结束，不要分轮等待用户确认。\n";
     if (chapterCount > 0) {
         prompt += L"章节大纲：\n";
         const size_t limit = std::min<size_t>(chapterCount, 200);
@@ -6809,38 +7318,120 @@ std::wstring Application::BuildAiSystemPrompt() const {
     return prompt;
 }
 
-void Application::ExecuteAiCommand(const std::wstring& body, int& readChapter) {
-    const size_t colon = body.find(L':');
+void Application::ExecuteAiCommand(const std::wstring& body, AiReadRange& readRange) {
+    // 归一化全角字符后解析；归一化保持长度不变，标注文字的位置可直接映射回原文。
+    const std::wstring normalized = NormalizeCommandText(body);
+    const size_t colon = normalized.find(L':');
     if (colon == std::wstring::npos) {
         return;
     }
-    const std::wstring name = body.substr(0, colon);
-    const std::wstring args = body.substr(colon + 1);
-    if (name == L"goto") {
-        const uint32_t offset = static_cast<uint32_t>(wcstoul(args.c_str(), nullptr, 10));
-        GoToGlobalOffset(offset);
+    const std::wstring name = TrimNoteText(normalized.substr(0, colon));
+    const std::wstring args = normalized.substr(colon + 1);
+    if (name == L"goto" || name == L"跳转") {
+        uint32_t offset = 0;
+        if (ExtractFirstNumber(args, offset)) {
+            GoToGlobalOffset(offset);
+        }
         return;
     }
-    if (name == L"read") {
-        readChapter = static_cast<int>(wcstoul(args.c_str(), nullptr, 10));
+    if (name == L"read" || name == L"读取") {
+        // 支持章节序号与章节标题两种写法。
+        uint32_t index = 0;
+        if (!readRange.valid) {
+            bool matched = false;
+            if (ExtractFirstNumber(args, index) && index < activeBook_.chapters.size()) {
+                matched = true;
+            } else {
+                const std::wstring keyword = TrimNoteText(args);
+                if (!keyword.empty()) {
+                    for (size_t i = 0; i < activeBook_.chapters.size(); ++i) {
+                        if (ChapterTitleAt(activeBook_, static_cast<int>(i)).find(keyword) !=
+                            std::wstring::npos) {
+                            index = static_cast<uint32_t>(i);
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (matched) {
+                const umd::Chapter& chapter = activeBook_.chapters[index];
+                readRange.valid = true;
+                readRange.start = chapter.charOffset;
+                readRange.length = chapter.charLength;
+            }
+        }
         return;
     }
-    if (name != L"highlight" && name != L"note") {
+    if (name == L"range" || name == L"范围") {
+        // 支持「起始偏移:字符数」、「起始偏移-结束偏移」、「起始偏移 结束偏移」等写法。
+        uint32_t start = 0;
+        uint32_t second = 0;
+        if (!ExtractTwoNumbers(args, start, second)) {
+            return;
+        }
+        uint32_t length = 0;
+        if (args.find(L':') != std::wstring::npos) {
+            length = second;
+        } else if (second > start) {
+            length = second - start;
+        }
+        if (length > 0 && !readRange.valid) {
+            readRange.valid = true;
+            readRange.start = start;
+            readRange.length = length;
+        }
+        return;
+    }
+    if (name == L"search" || name == L"find" || name == L"搜索" || name == L"查找") {
+        // 关键词检索：先找当前阅读位置之后的首次出现，找不到再从全文开头查找。
+        const std::wstring keyword = TrimNoteText(args);
+        const uint32_t total = activeBook_.ContentCharCount();
+        if (keyword.empty() || readRange.valid || total == 0) {
+            return;
+        }
+        const std::wstring loweredContent = LowerCase(activeBook_.content);
+        const std::wstring loweredKeyword = LowerCase(keyword);
+        const uint32_t current = std::min(CurrentGlobalOffset(), total);
+        size_t position = loweredContent.find(loweredKeyword, current);
+        if (position == std::wstring::npos) {
+            position = loweredContent.find(loweredKeyword);
+        }
+        if (position != std::wstring::npos) {
+            const uint32_t match = static_cast<uint32_t>(position);
+            const uint32_t start = match > 600 ? match - 600 : 0;
+            const uint32_t length =
+                std::min<uint32_t>(static_cast<uint32_t>(keyword.size()) + 1800, total - start);
+            readRange.valid = true;
+            readRange.start = start;
+            readRange.length = length;
+        }
+        return;
+    }
+    if (name != L"highlight" && name != L"note" && name != L"高亮" && name != L"标注") {
         return;
     }
     const size_t first = args.find(L':');
     if (first == std::wstring::npos) {
         return;
     }
-    const uint32_t start = static_cast<uint32_t>(wcstoul(args.c_str(), nullptr, 10));
+    uint32_t start = 0;
+    if (!ExtractFirstNumber(args.substr(0, first), start)) {
+        return;
+    }
     const size_t second = args.find(L':', first + 1);
     const std::wstring lengthText =
         second == std::wstring::npos ? args.substr(first + 1)
                                      : args.substr(first + 1, second - first - 1);
-    const uint32_t length = static_cast<uint32_t>(wcstoul(lengthText.c_str(), nullptr, 10));
+    uint32_t length = 0;
+    if (!ExtractFirstNumber(lengthText, length)) {
+        return;
+    }
+    // 标注文字取原文字符串，保留模型输出的全角标点。
     const std::wstring extra =
-        second == std::wstring::npos ? std::wstring() : args.substr(second + 1);
-    if (name == L"highlight") {
+        second == std::wstring::npos ? std::wstring()
+                                     : body.substr(colon + 1 + second + 1);
+    if (name == L"highlight" || name == L"高亮") {
         AddAiHighlight(start, length, extra);
     } else {
         AddAiNote(start, length, extra);
@@ -6848,24 +7439,73 @@ void Application::ExecuteAiCommand(const std::wstring& body, int& readChapter) {
 }
 
 void Application::ProcessAiCommands(const std::wstring& reply, std::wstring& cleaned,
-                                    int& readChapter) {
+                                    AiReadRange& readRange) {
     cleaned.clear();
-    readChapter = -1;
+    readRange = AiReadRange{};
+    // 模型常模仿正文注入消息，直接写出「【正文范围 A - B】」而不输出标准命令；
+    // 这里把这类范围说明也识别为读取请求，并从显示内容中移除。
+    struct RangeLabel {
+        const wchar_t* prefix;
+        size_t prefixLength;
+        wchar_t closing;
+    };
+    const RangeLabel labels[] = {
+        {L"【正文范围", 5, L'】'},
+        {L"【读取范围", 5, L'】'},
+        {L"[正文范围", 5, L']'},
+        {L"[读取范围", 5, L']'},
+    };
     size_t position = 0;
     while (position < reply.size()) {
-        const size_t open = reply.find(L"[[", position);
-        if (open == std::wstring::npos) {
+        const size_t commandOpen = reply.find(L"[[", position);
+        size_t labelOpen = std::wstring::npos;
+        size_t labelIndex = 0;
+        for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i) {
+            const size_t found = reply.find(labels[i].prefix, position);
+            if (found != std::wstring::npos &&
+                (labelOpen == std::wstring::npos || found < labelOpen)) {
+                labelOpen = found;
+                labelIndex = i;
+            }
+        }
+        size_t tokenOpen = commandOpen;
+        if (labelOpen != std::wstring::npos &&
+            (commandOpen == std::wstring::npos || labelOpen < commandOpen)) {
+            tokenOpen = labelOpen;
+        }
+        if (tokenOpen == std::wstring::npos) {
             cleaned.append(reply.substr(position));
             break;
         }
-        cleaned.append(reply.substr(position, open - position));
-        const size_t close = reply.find(L"]]", open + 2);
+        cleaned.append(reply.substr(position, tokenOpen - position));
+        if (tokenOpen == commandOpen) {
+            const size_t close = reply.find(L"]]", commandOpen + 2);
+            if (close == std::wstring::npos) {
+                cleaned.append(reply.substr(commandOpen));
+                break;
+            }
+            ExecuteAiCommand(reply.substr(commandOpen + 2, close - commandOpen - 2),
+                             readRange);
+            position = close + 2;
+            continue;
+        }
+        const RangeLabel& label = labels[labelIndex];
+        const size_t close = reply.find(label.closing, labelOpen + label.prefixLength);
         if (close == std::wstring::npos) {
-            cleaned.append(reply.substr(open));
+            cleaned.append(reply.substr(labelOpen));
             break;
         }
-        ExecuteAiCommand(reply.substr(open + 2, close - open - 2), readChapter);
-        position = close + 2;
+        const std::wstring inner = NormalizeCommandText(
+            reply.substr(labelOpen + label.prefixLength,
+                         close - labelOpen - label.prefixLength));
+        uint32_t begin = 0;
+        uint32_t end = 0;
+        if (!readRange.valid && ExtractTwoNumbers(inner, begin, end) && end > begin) {
+            readRange.valid = true;
+            readRange.start = begin;
+            readRange.length = end - begin;
+        }
+        position = close + 1;
     }
 }
 
@@ -6936,25 +7576,28 @@ void Application::AddAiNote(uint32_t globalStart, uint32_t length, const std::ws
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void Application::StartAiFollowUp(int chapterIndex) {
+void Application::StartAiFollowUp(uint32_t start, uint32_t length) {
     data::ChatSession* session = EnsureChatSession();
-    if (session == nullptr || activeBook_.chapters.empty()) {
+    if (session == nullptr || activeBook_.content.empty()) {
         return;
     }
-    const int index =
-        std::clamp(chapterIndex, 0, static_cast<int>(activeBook_.chapters.size()) - 1);
-    const umd::Chapter& chapter = activeBook_.chapters[static_cast<size_t>(index)];
-    constexpr uint32_t kMaxChapterChars = 24000;
-    std::wstring text =
-        activeBook_.content.substr(chapter.charOffset,
-                                   std::min(chapter.charLength, kMaxChapterChars));
-    if (chapter.charLength > kMaxChapterChars) {
-        text += L"\n（本章过长，仅提供前 24000 个字符）";
+    const uint32_t total = static_cast<uint32_t>(activeBook_.content.size());
+    if (start >= total) {
+        return;
+    }
+    constexpr uint32_t kMaxReadChars = 24000;
+    const uint32_t limited = std::min(length, kMaxReadChars);
+    const uint32_t available = std::min(limited, total - start);
+    aiLastReadEnd_ = start + available;
+    std::wstring text = activeBook_.content.substr(start, available);
+    if (available < length) {
+        text += L"\n（超出可读取范围，已截取到 " + std::to_wstring(available) + L" 个字符）";
     }
     const int64_t now = util::CurrentUnixSeconds();
     data::ChatMessage message;
     message.role = L"user";
-    message.text = L"【第 " + std::to_wstring(index + 1) + L" 章正文】\n" + text;
+    message.text = L"【正文范围 " + std::to_wstring(start) + L" - " +
+                   std::to_wstring(start + available) + L"】\n" + text;
     message.createdAt = now;
     session->messages.push_back(std::move(message));
     session->updatedAt = now;
@@ -6968,7 +7611,8 @@ void Application::StartAiFollowUp(int chapterIndex) {
 }
 
 void Application::RunAiRequest(std::wstring url, std::wstring apiKey, std::wstring model,
-                               std::wstring protocol, std::wstring systemPrompt,
+                               std::wstring protocol, int thinkingLevel,
+                               std::wstring systemPrompt,
                                std::vector<std::pair<std::wstring, std::wstring>> history,
                                HWND target) {
     const bool anthropic = protocol == L"anthropic";
@@ -7032,12 +7676,25 @@ void Application::RunAiRequest(std::wstring url, std::wstring apiKey, std::wstri
     nlohmann::json body;
     body["model"] = util::ToUtf8(model);
     body["stream"] = true;
+    const int thinkingBudget =
+        thinkingLevel <= 0 ? 0 : (thinkingLevel == 1 ? 1024 : (thinkingLevel == 2 ? 2048 : 4096));
     if (anthropic) {
         // Anthropic Messages 接口必须指定 max_tokens，系统提示使用顶层 system 字段。
-        body["max_tokens"] = 1024;
+        // 开启思考时 max_tokens 需大于思考预算。
+        body["max_tokens"] = thinkingBudget + 1024;
+        if (thinkingBudget > 0) {
+            nlohmann::json thinking;
+            thinking["type"] = "enabled";
+            thinking["budget_tokens"] = thinkingBudget;
+            body["thinking"] = std::move(thinking);
+        }
         if (!systemPrompt.empty()) {
             body["system"] = util::ToUtf8(systemPrompt);
         }
+    } else if (thinkingBudget > 0) {
+        // OpenAI 兼容协议使用 reasoning_effort 表达思考等级。
+        body["reasoning_effort"] =
+            thinkingLevel == 1 ? "low" : (thinkingLevel == 2 ? "medium" : "high");
     }
     nlohmann::json messages = nlohmann::json::array();
     if (!anthropic && !systemPrompt.empty()) {
@@ -7143,6 +7800,12 @@ void Application::RunAiRequest(std::wstring url, std::wstring apiKey, std::wstri
                             if (!text.empty()) {
                                 PushAiChunk(util::FromUtf8(text), target);
                             }
+                        } else if (delta.value("type", std::string()) == "thinking_delta") {
+                            // 思考内容单独流式输出，供界面折叠展示。
+                            const std::string thinking = delta.value("thinking", std::string());
+                            if (!thinking.empty()) {
+                                PushAiThinking(util::FromUtf8(thinking), target);
+                            }
                         }
                     }
                 } else {
@@ -7151,6 +7814,20 @@ void Application::RunAiRequest(std::wstring url, std::wstring apiKey, std::wstri
                         continue;
                     }
                     const nlohmann::json& delta = chunk["choices"][0]["delta"];
+                    if (delta.contains("reasoning_content") &&
+                        delta["reasoning_content"].is_string()) {
+                        // 常见兼容实现使用 reasoning_content 输出思考内容。
+                        const std::string reasoning =
+                            delta["reasoning_content"].get<std::string>();
+                        if (!reasoning.empty()) {
+                            PushAiThinking(util::FromUtf8(reasoning), target);
+                        }
+                    } else if (delta.contains("reasoning") && delta["reasoning"].is_string()) {
+                        const std::string reasoning = delta["reasoning"].get<std::string>();
+                        if (!reasoning.empty()) {
+                            PushAiThinking(util::FromUtf8(reasoning), target);
+                        }
+                    }
                     if (delta.contains("content") && delta["content"].is_string()) {
                         const std::string content = delta["content"].get<std::string>();
                         if (!content.empty()) {
@@ -7197,6 +7874,17 @@ void Application::OpenBook(const std::wstring& id) {
     const uint32_t resumeOffset = record->progressCharOffset;
     activeBookId_ = id;
     activeBook_ = std::move(parsed);
+    // 纯文本按已保存的提取方式重建章节，保证章节偏移与书签、高亮、标注中记录的章节下标一致。
+    if (activeBook_.formatType == 0 && record->chapterMode != L"auto") {
+        std::vector<umd::Chapter> chapters =
+            umd::DetectChaptersByUnits(activeBook_.content,
+                                       umd::ChapterUnitsForMode(record->chapterMode));
+        if (!chapters.empty()) {
+            activeBook_.chapters = std::move(chapters);
+        } else {
+            record->chapterMode = L"auto";
+        }
+    }
     activeChapter_ = 0;
     activePage_ = 0;
     lineOffset_ = 0;
@@ -7748,7 +8436,7 @@ void Application::DrawReaderScrollbar(const ThemeColors& colors) {
     D2D1_RECT_F textRect{};
     ComputeTextMetrics(textWidth, textHeight, textRect);
     const float left =
-        panel_ == PanelMode::None ? widthDip_ - 20.0f : widthDip_ - kPanelWidth - 24.0f;
+        panel_ == PanelMode::None ? widthDip_ - 20.0f : widthDip_ - PanelWidth() - 24.0f;
     if (left <= textRect.right) {
         return;
     }
@@ -8159,7 +8847,7 @@ void Application::ApplySearchHighlight(IDWriteTextLayout* layout, const std::wst
 
 void Application::ComputeTextMetrics(float& textWidth, float& textHeight,
                                      D2D1_RECT_F& textRect) const {
-    const float panelReserve = panel_ != PanelMode::None ? kPanelWidth : 0.0f;
+    const float panelReserve = panel_ != PanelMode::None ? PanelWidth() : 0.0f;
     const float availableWidth = widthDip_ - panelReserve;
     const float horizontalPadding = 64.0f;
     textWidth = std::min(availableWidth - horizontalPadding * 2.0f, 860.0f);

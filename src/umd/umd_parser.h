@@ -52,4 +52,15 @@ bool ParseTextFile(const std::filesystem::path& path, Book& book, std::wstring& 
 // 按扩展名分派：.txt 走文本解析，其余按 UMD 解析。
 bool ParseBookFile(const std::filesystem::path& path, Book& book, std::wstring& error);
 
+// 按指定层级单位重新识别章节。units 按层级从高到低排列（最多三级，例如 {集, 章, 节}），
+// 仅「集」这类上级标题不会成为独立章节，最终以最深层标题分段，标题中带上上级标题。
+std::vector<Chapter> DetectChaptersByUnits(const std::wstring& text,
+                                           const std::vector<wchar_t>& units);
+
+// 使用默认单位集合（章、回、节、卷、篇、幕）识别章节，与纯文本首次解析的结果一致。
+std::vector<Chapter> DetectDefaultChapters(const std::wstring& text);
+
+// 章节提取方式（auto/hui/zhang/jie/jizhang/jizhangjie）对应的层级单位。
+std::vector<wchar_t> ChapterUnitsForMode(const std::wstring& mode);
+
 }  // namespace umd

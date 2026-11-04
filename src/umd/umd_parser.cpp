@@ -677,7 +677,8 @@ bool IsChapterNumber(wchar_t character) {
 // 识别「第X章/回/节/卷/篇/幕」形式的标题行。
 // 规则收紧以减少正文误判：单位后必须结束或紧跟分隔符，整行不含句末标点，长度不超过 60。
 // 允许「第 12 章」「第 一 章」这类数字前后带空白的写法。
-bool LooksLikeChapterHeading(const std::wstring& line) {
+bool MatchChapterHeading(const std::wstring& line, const std::vector<wchar_t>& units,
+                         wchar_t& matchedUnit) {
     if (line.size() > 60) {
         return false;
     }
@@ -710,8 +711,7 @@ bool LooksLikeChapterHeading(const std::wstring& line) {
         return false;
     }
     const wchar_t unit = line[position];
-    if (unit != L'章' && unit != L'回' && unit != L'节' && unit != L'卷' && unit != L'篇' &&
-        unit != L'幕') {
+    if (std::find(units.begin(), units.end(), unit) == units.end()) {
         return false;
     }
     ++position;
@@ -732,11 +732,30 @@ bool LooksLikeChapterHeading(const std::wstring& line) {
             return false;
         }
     }
+    matchedUnit = unit;
     return true;
 }
 
 std::vector<Chapter> DetectChapters(const std::wstring& text) {
+    return DetectChaptersByUnits(text, {L'章', L'回', L'节', L'卷', L'篇', L'幕'});
+}
+
+}  // namespace
+
+std::vector<Chapter> DetectChaptersByUnits(const std::wstring& text,
+                                           const std::vector<wchar_t>& units) {
     std::vector<Chapter> chapters;
+    if (text.empty() || units.empty() || units.size() > 3) {
+        return chapters;
+    }
+
+    // 先按行扫描出所有标题，记录其层级与所在偏移。
+    struct Heading {
+        int rank = 0;
+        uint32_t offset = 0;
+        std::wstring title;
+    };
+    std::vector<Heading> headings;
     const size_t size = text.size();
     size_t lineStart = 0;
     while (lineStart < size) {
@@ -744,11 +763,15 @@ std::vector<Chapter> DetectChapters(const std::wstring& text) {
         while (lineEnd < size && text[lineEnd] != L'\r' && text[lineEnd] != L'\n') {
             ++lineEnd;
         }
-        if (LooksLikeChapterHeading(text.substr(lineStart, lineEnd - lineStart))) {
-            Chapter chapter;
-            chapter.title = TrimLine(text.substr(lineStart, lineEnd - lineStart));
-            chapter.charOffset = static_cast<uint32_t>(lineStart);
-            chapters.push_back(std::move(chapter));
+        wchar_t unit = 0;
+        const std::wstring line = text.substr(lineStart, lineEnd - lineStart);
+        if (MatchChapterHeading(line, units, unit)) {
+            Heading heading;
+            heading.rank =
+                static_cast<int>(std::find(units.begin(), units.end(), unit) - units.begin());
+            heading.offset = static_cast<uint32_t>(lineStart);
+            heading.title = TrimLine(line);
+            headings.push_back(std::move(heading));
         }
         if (lineEnd >= size) {
             break;
@@ -758,6 +781,51 @@ std::vector<Chapter> DetectChapters(const std::wstring& text) {
             ++next;
         }
         lineStart = next;
+    }
+    if (headings.empty()) {
+        return chapters;
+    }
+
+    // 依据层级建立父子关系：父标题是其之前最近的更高层标题。
+    std::vector<int> parentOf(headings.size(), -1);
+    std::vector<int> stack;
+    for (size_t i = 0; i < headings.size(); ++i) {
+        while (!stack.empty() && headings[stack.back()].rank >= headings[i].rank) {
+            stack.pop_back();
+        }
+        parentOf[i] = stack.empty() ? -1 : stack.back();
+        stack.push_back(static_cast<int>(i));
+    }
+    std::vector<bool> hasChild(headings.size(), false);
+    for (size_t i = 0; i < headings.size(); ++i) {
+        if (parentOf[i] >= 0) {
+            hasChild[static_cast<size_t>(parentOf[i])] = true;
+        }
+    }
+
+    // 只有最深层标题成为章节；标题按「上级 · 本级」拼接，便于在扁平目录中区分层级。
+    for (size_t i = 0; i < headings.size(); ++i) {
+        if (hasChild[i]) {
+            continue;
+        }
+        std::vector<const std::wstring*> titles;
+        int cursor = static_cast<int>(i);
+        while (cursor >= 0) {
+            titles.push_back(&headings[static_cast<size_t>(cursor)].title);
+            cursor = parentOf[static_cast<size_t>(cursor)];
+        }
+        std::reverse(titles.begin(), titles.end());
+        std::wstring joined;
+        for (size_t k = 0; k < titles.size(); ++k) {
+            if (k > 0) {
+                joined += L" · ";
+            }
+            joined += *titles[k];
+        }
+        Chapter chapter;
+        chapter.title = joined;
+        chapter.charOffset = headings[i].offset;
+        chapters.push_back(std::move(chapter));
     }
     if (chapters.empty()) {
         return chapters;
@@ -769,7 +837,7 @@ std::vector<Chapter> DetectChapters(const std::wstring& text) {
         chapters[i].charLength =
             end > chapters[i].charOffset ? end - chapters[i].charOffset : 0;
     }
-    // 第一个章节标题之前的内容单独成章，避免这部分正文无法阅读。
+    // 第一个标题之前的内容单独成章，避免这部分正文无法阅读。
     if (chapters.front().charOffset > 0) {
         Chapter preface;
         preface.title = L"正文";
@@ -780,7 +848,28 @@ std::vector<Chapter> DetectChapters(const std::wstring& text) {
     return chapters;
 }
 
-}  // namespace
+std::vector<Chapter> DetectDefaultChapters(const std::wstring& text) {
+    return DetectChapters(text);
+}
+
+std::vector<wchar_t> ChapterUnitsForMode(const std::wstring& mode) {
+    if (mode == L"hui") {
+        return {L'回'};
+    }
+    if (mode == L"zhang") {
+        return {L'章'};
+    }
+    if (mode == L"jie") {
+        return {L'节'};
+    }
+    if (mode == L"jizhang") {
+        return {L'集', L'章'};
+    }
+    if (mode == L"jizhangjie") {
+        return {L'集', L'章', L'节'};
+    }
+    return {L'章', L'回', L'节', L'卷', L'篇', L'幕'};
+}
 
 bool ParseTextFile(const std::filesystem::path& path, Book& book, std::wstring& error) {
     error.clear();

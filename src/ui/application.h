@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -43,6 +44,8 @@ private:
         OpenDataFolder,
         ShelfSettings,
         ShelfSettingsClose,
+        // 全局设置中的「设置快捷键」入口。
+        OpenShortcutSettings,
         ShelfSearchBox,
         CategoryManager,
         CategoryManagerClose,
@@ -58,8 +61,7 @@ private:
         CategoryNameInput,
         CategoryPickerItem,
         BackToShelf,
-        // 菜单入口与菜单项；菜单项通过索引对应当前菜单条目。
-        OpenMenu,
+        // 菜单项通过索引对应当前菜单条目。
         MenuItem,
         OpenToc,
         OpenBookmarks,
@@ -75,6 +77,9 @@ private:
         ChatInput,
         ChatSend,
         ChatStop,
+        // 阅读助手面板的左边缘分割条与对话内容区的滚动条。
+        ChatPanelSplitter,
+        ChatScrollbar,
         // AI 对话的会话管理：打开对话记录、新建、列表项、删除、关闭，以及复制单条消息。
         ChatSessionOpen,
         ChatSessionNew,
@@ -82,8 +87,12 @@ private:
         ChatSessionDelete,
         ChatSessionClose,
         ChatCopyMessage,
+        // 展开/折叠某条消息的思考内容。
+        ChatThinkingToggle,
         ChatProtocolOpenAi,
         ChatProtocolAnthropic,
+        // 思考等级按钮，index 为 0..3。
+        AiThinkingLevel,
         OpenAiSettings,
         AiSettingsSave,
         AiSettingsClose,
@@ -111,6 +120,8 @@ private:
         ScrollModeLine,
         ScrollModePage,
         ReaderScrollbar,
+        // 目录与书签列表的竖向滚动条。
+        PanelScrollbar,
         // 文件关联复选框：勾选时关联，取消勾选时取消关联。
         ToggleUmdAssociation,
         ToggleTxtAssociation,
@@ -181,8 +192,10 @@ private:
     D2D1_RECT_F MenuRect() const;
     void ExecuteMenuEntry(const MenuEntry& entry);
     void OnRightButtonDown(int xPixels, int yPixels);
-    std::vector<MenuEntry> ReaderMenuEntries(bool contextual, float x, float y);
+    std::vector<MenuEntry> ReaderMenuEntries(float x, float y);
     std::vector<MenuEntry> ShelfMenuEntries();
+    // 按指定规则重新提取纯文本章节并保存。
+    void ApplyChapterMode(const std::wstring& mode);
     // 阅读区背景：跟随主题时不额外绘制，纯色填充，图片按覆盖方式铺满。
     void DrawReaderBackground(const ThemeColors& colors);
     ID2D1Bitmap* BackgroundBitmap();
@@ -215,6 +228,13 @@ private:
         ComPtr<IDWriteTextLayout> layout;
         float top = 0.0f;
         float height = 0.0f;
+        // 思考内容与其展开状态；为空表示该消息没有思考过程。
+        std::wstring thinking;
+        bool thinkingExpanded = false;
+        float thinkingHeight = 0.0f;
+        ComPtr<IDWriteTextLayout> thinkingLayout;
+        D2D1_RECT_F thinkingRect{};
+        D2D1_RECT_F thinkingToggleRect{};
     };
     void BuildChatBubbles(const D2D1_RECT_F& rect, std::vector<ChatBubble>& bubbles);
     bool BeginChatSelection(float x, float y);
@@ -274,6 +294,10 @@ private:
     void DrawButton(const std::wstring& label, const D2D1_RECT_F& rect, HitKind kind,
                     const ThemeColors& colors, bool primary, bool active, int index = -1,
                     const std::wstring& value = std::wstring());
+    // 非加粗按钮：用于对话面板内的次要操作（新建会话、复制消息）。
+    void DrawPlainButton(const std::wstring& label, const D2D1_RECT_F& rect, HitKind kind,
+                         const ThemeColors& colors, int index = -1,
+                         const std::wstring& value = std::wstring());
     void DrawEmptyShelf(const ThemeColors& colors);
     void DrawShelfSettings(const ThemeColors& colors);
     void DrawCategoryManager(const ThemeColors& colors);
@@ -383,8 +407,17 @@ private:
     D2D1_RECT_F SearchBoxRect() const;
     D2D1_RECT_F NoteInputBoxRect() const;
     D2D1_RECT_F ReaderPanelContentRect() const;
+    // 侧栏宽度：阅读助手面板可由分割条调整，其余面板固定。
+    float PanelWidth() const;
     D2D1_RECT_F ChatFieldRect(ChatFocus field) const;
     D2D1_RECT_F ChatConversationRect() const;
+    D2D1_RECT_F ChatScrollbarTrackRect() const;
+    // 按鼠标纵坐标把对话内容滚动到对应比例。
+    void ScrollChatFromY(float y);
+    // 目录与书签列表的滚动条：轨道、绘制与拖动定位。
+    D2D1_RECT_F PanelScrollbarTrackRect() const;
+    void DrawPanelScrollbar(const ThemeColors& colors);
+    void ScrollPanelFromY(float y);
     D2D1_RECT_F ChatStatusRect() const;
     D2D1_RECT_F ChatSendRect() const;
     D2D1_RECT_F ChatStopRect() const;
@@ -397,17 +430,25 @@ private:
     // 阅读助手的系统提示：身份、书籍信息、当前阅读位置与可用控制命令。
     std::wstring BuildAiSystemPrompt() const;
     // 解析回复中的控制命令并执行，cleaned 为去掉命令后的展示文本。
-    void ProcessAiCommands(const std::wstring& reply, std::wstring& cleaned, int& readChapter);
-    void ExecuteAiCommand(const std::wstring& body, int& readChapter);
+    struct AiReadRange {
+        bool valid = false;
+        uint32_t start = 0;
+        uint32_t length = 0;
+    };
+    void ProcessAiCommands(const std::wstring& reply, std::wstring& cleaned,
+                           AiReadRange& readRange);
+    void ExecuteAiCommand(const std::wstring& body, AiReadRange& readRange);
     void AddAiHighlight(uint32_t globalStart, uint32_t length, const std::wstring& color);
     void AddAiNote(uint32_t globalStart, uint32_t length, const std::wstring& text);
-    void StartAiFollowUp(int chapterIndex);
+    void StartAiFollowUp(uint32_t start, uint32_t length);
     void StopAiRequest();
     // 连续对话：按历史消息（角色, 内容）构造请求，保序发送。
     void RunAiRequest(std::wstring url, std::wstring apiKey, std::wstring model,
-                      std::wstring protocol, std::wstring systemPrompt,
+                      std::wstring protocol, int thinkingLevel, std::wstring systemPrompt,
                       std::vector<std::pair<std::wstring, std::wstring>> history, HWND target);
     void PushAiChunk(const std::wstring& text, HWND target);
+    // 思考内容增量（reasoning_content / thinking_delta）。
+    void PushAiThinking(const std::wstring& text, HWND target);
     void PushAiDone(const std::wstring& status, HWND target);
     void AppendAiChunks();
     // 把当前流式回复作为 assistant 消息写入会话并保存。
@@ -499,6 +540,7 @@ private:
 
     float panelScroll_ = 0.0f;
     float panelScrollMax_ = 0.0f;
+    bool panelScrollDragging_ = false;
     std::wstring searchQuery_;
     bool searchFocused_ = false;
     std::vector<SearchResult> searchResults_;
@@ -551,23 +593,33 @@ private:
     int shortcutCaptureIndex_ = -1;
     std::wstring aiDraft_;           // 问题输入框内容
     std::wstring aiAnswer_;          // 当前流式回复（完成后写入会话）
+    std::wstring aiThinking_;        // 当前流式思考内容（完成后写入会话）
+    std::wstring aiThinkingPending_; // 后台线程累积的思考增量
     std::wstring aiStatus_;          // 请求状态提示
     // 当前会话标识，以及对话内容区的滚动量。
     std::wstring activeChatSessionId_;
     float chatScroll_ = 0.0f;
     float chatScrollMax_ = 0.0f;
+    // 对话内容区滚动条拖动，以及阅读助手面板宽度调整。
+    bool chatScrollDragging_ = false;
+    float chatPanelWidth_ = 372.0f;
+    bool chatPanelResizing_ = false;
     // 对话气泡内的文字选择：消息下标与选区起止（消息文本内偏移）。
     int chatSelectionMessage_ = -1;
     uint32_t chatSelectionStart_ = 0;
     uint32_t chatSelectionEnd_ = 0;
     bool chatSelecting_ = false;
+    // 已展开思考内容的消息下标；流式回复以小标 -1 记录。
+    std::unordered_set<int> chatThinkingExpanded_;
     // 对话记录弹框状态与其列表滚动量。
     bool chatSessionPickerVisible_ = false;
     float chatSessionPickerScroll_ = 0.0f;
     float chatSessionPickerScrollMax_ = 0.0f;
     bool aiStreaming_ = false;
-    // 每轮用户提问最多自动追加一次章节读取，避免命令循环。
-    bool aiFollowUpUsed_ = false;
+    // 每轮用户提问自动读取正文的轮数，达到上限后停止，避免命令循环。
+    int aiFollowUpCount_ = 0;
+    // 最近一次自动读取正文区间的结束偏移，用于模型只表达读取意向时的续读起点。
+    uint32_t aiLastReadEnd_ = 0;
     std::thread aiThread_;
     std::mutex aiMutex_;
     std::wstring aiPendingText_;
