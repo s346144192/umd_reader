@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- UMD 阅读器应用图标：咖啡色底板上的翻开书本，右页带折角，呼应 UMD 电子文档。
+     主色取自程序浅色主题的强调色 #A9825F。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#BB9169"/>
+      <stop offset="1" stop-color="#87613F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底板 -->
+  <rect x="0" y="0" width="512" height="512" rx="120" fill="url(#bg)"/>
+
+  <!-- 书的投影 -->
+  <g fill="#5E3E24" opacity="0.35" transform="translate(6 12)">
+    <path d="M80 146 C140 170 200 198 246 218 L246 356 C200 344 140 324 80 302 Z"/>
+    <path d="M432 146 C372 170 312 198 266 218 L266 356 C312 344 372 324 432 302 Z"/>
+  </g>
+
+  <!-- 翻开的书：左右两页在书脊处留出折痕 -->
+  <g fill="#FFFFFF">
+    <path d="M80 146 C140 170 200 198 246 218 L246 356 C200 344 140 324 80 302 Z"/>
+    <path d="M432 146 C372 170 312 198 266 218 L266 356 C312 344 372 324 432 302 Z"/>
+  </g>
+
+  <!-- 右页折角：翻过来的纸背 -->
+  <path d="M377 170 L432 146 L432 206 Z" fill="#E0C9A4"/>
+
+  <!-- 左页文字行 -->
+  <g stroke="#8A6444" stroke-width="13" stroke-linecap="round" fill="none">
+    <path d="M112 206 L200 238"/>
+    <path d="M112 240 L168 258"/>
+    <path d="M112 264 L146 274"/>
+  </g>
+
+  <!-- 右页（文档页）文字行 -->
+  <g stroke="#8A6444" stroke-width="13" stroke-linecap="round" fill="none">
+    <path d="M300 240 L372 210"/>
+    <path d="M300 268 L352 251"/>
+  </g>
+</svg>

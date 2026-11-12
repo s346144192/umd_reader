@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>复杂排版测试页</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #f4f1ea;
+    color: #2b2723;
+    font-family: "Microsoft YaHei UI";
+    font-size: 15px;
+    line-height: 1.7;
+    padding: 48px 56px;
+  }
+
+  h1 { font-size: 30px; line-height: 1.3; margin: 0 0 6px 0; color: #1d1a17; letter-spacing: 1px; }
+  h2 { font-size: 20px; margin: 30px 0 10px 0; color: #7a3d22; }
+  h3 { font-size: 15px; margin: 0 0 6px 0; color: #7a3d22; letter-spacing: 1px; }
+  p { margin: 0 0 12px 0; text-align: justify; }
+  .center { text-align: center; }
+  .right { text-align: right; color: #8a7f70; font-size: 13px; }
+
+  .hero {
+    background: #ece2d2;
+    border: 1px solid #d8c9b3;
+    border-radius: 18px;
+    padding: 26px 30px;
+    margin: 0 0 20px 0;
+  }
+  .kicker { font-size: 12px; letter-spacing: 3px; color: #9c5a36; margin: 0 0 10px 0; }
+  .hero h1 { margin-bottom: 4px; }
+  .hero .sub { color: #6d6255; font-size: 14px; letter-spacing: 1px; }
+  .rule { height: 3px; width: 140px; background: #b1542f; border-radius: 2px; margin: 16px auto 0 auto; }
+
+  .row { margin: 0 0 18px 0; }
+  .col {
+    display: inline-block;
+    width: 43%;
+    background: #ffffff;
+    border: 1px solid #ddd3c4;
+    border-radius: 14px;
+    padding: 18px 20px;
+    margin-right: 2%;
+  }
+  .col.last { margin-right: 0; }
+  .col p { font-size: 14px; color: #4a423a; margin: 0; }
+  .col .tagline { font-size: 12px; letter-spacing: 1px; color: #9c5a36; margin-top: 8px; }
+
+  .stats { margin: 4px 0 22px 0; text-align: center; }
+  .stat {
+    display: inline-block;
+    width: 30%;
+    background: #efe8dc;
+    border-radius: 10px;
+    padding: 12px 0;
+    margin: 0 1%;
+  }
+  .stat .value { font-size: 22px; font-weight: bold; color: #b1542f; line-height: 1.3; }
+  .stat .label { font-size: 12px; color: #6d6255; letter-spacing: 1px; }
+
+  mark { background: #f2ddc2; color: #7a3d22; padding: 0 4px; border-radius: 4px; }
+  code.inline {
+    font-family: Consolas;
+    font-size: 13px;
+    background: #ece7df;
+    color: #4f4436;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .quote {
+    background: #efe8dc;
+    border-left: 6px solid #b1542f;
+    border-radius: 0 12px 12px 0;
+    padding: 16px 20px;
+    margin: 14px 0 18px 0;
+    color: #574d42;
+    font-size: 14px;
+  }
+  .quote p { margin: 0; }
+
+  ul, ol { margin: 0 0 16px 0; padding-left: 34px; }
+  ul.square { list-style-type: square; }
+  ol.roman { list-style-type: lower-roman; }
+  li { margin: 3px 0; }
+  li > ul { margin: 4px 0 0 0; padding-left: 26px; }
+
+  .code {
+    font-family: Consolas;
+    font-size: 13px;
+    background: #23211e;
+    color: #e9dfcd;
+    padding: 14px 18px;
+    border-radius: 10px;
+    margin: 12px 0 18px 0;
+  }
+  pre.plain {
+    font-family: Consolas;
+    font-size: 13px;
+    background: #f0ece3;
+    color: #3f382f;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin: 12px 0 18px 0;
+    white-space: pre;
+  }
+
+  .figure {
+    display: inline-block;
+    background: #ffffff;
+    border: 1px solid #ddd3c4;
+    border-radius: 12px;
+    padding: 12px;
+    margin: 0 0 18px 0;
+  }
+  .figure img { display: inline-block; border-radius: 8px; }
+  .caption { font-size: 12px; color: #786b5d; text-align: center; margin-top: 8px; letter-spacing: 1px; }
+
+  .actions { margin-top: 8px; }
+  .button {
+    display: inline-block;
+    background: #b1542f;
+    color: #ffffff;
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-right: 10px;
+  }
+  .button.ghost {
+    background: #ffffff;
+    color: #9c4a2b;
+    border: 1px solid #d8b7a5;
+  }
+  .hint { font-size: 12px; color: #8a7f70; }
+  .footnote { font-size: 12px; color: #8a7f70; margin-top: 24px; }
+</style>
+</head>
+<body>
+
+  <div class="hero">
+    <p class="kicker">复杂排版验证 · 多段结构</p>
+    <h1>自研渲染引擎 · 复杂页面测试</h1>
+    <div class="sub">嵌套块级流 · 行内块分栏 · 列表层级 · 预格式化文本 · 分页边界</div>
+    <div class="rule"></div>
+  </div>
+
+  <div class="row">
+    <div class="col">
+      <h3>左栏：块级嵌套</h3>
+      <p>本栏用于验证行内块宽度百分比、内边距、边框与圆角。内部段落继续走块级流，并与右栏共享同一套行内断行逻辑。</p>
+      <p class="tagline">inline-block · width 43%</p>
+    </div>
+    <div class="col last">
+      <h3>右栏：基线对齐</h3>
+      <p>两个行内块按基线对齐。为保证视觉整齐，两栏文本行数与字号保持一致，边框与底色由绘制层独立处理。</p>
+      <p class="tagline">baseline alignment</p>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="value">3</div><div class="label">图形后端</div></div>
+    <div class="stat"><div class="value">17</div><div class="label">CSS 属性</div></div>
+    <div class="stat"><div class="value">2</div><div class="label">解析器工具</div></div>
+  </div>
+
+  <p>段落中的行内元素需要与正文基线严格对齐：<mark>高亮片段</mark>、<code class="inline">inline code</code>、<a href="#">主题链接</a>，以及<strong>加粗强调</strong>与 <em>斜体文字</em>。这段文字同时包含中文标点（，。！？）、引号“示例”与括号（说明），用于检查避头尾规则。</p>
+
+  <h2>一、列表与嵌套层级</h2>
+  <ul class="square">
+    <li>顶层列表项：方块标记与左内边距。</li>
+    <li>嵌套层级测试：
+      <ul>
+        <li>二级列表项一：继续使用方块标记。</li>
+        <li>二级列表项二：缩进与标记位置独立计算。</li>
+      </ul>
+    </li>
+    <li>顶层列表项三：包含<mark>行内背景</mark>的片段。</li>
+  </ul>
+
+  <ol class="roman">
+    <li>有序列表项一：小写罗马数字标记。</li>
+    <li>有序列表项二：序号由列表上下文生成。</li>
+    <li>有序列表项三：标记宽度不影响正文缩进。</li>
+  </ol>
+
+  <h2>二、引用与代码块</h2>
+  <div class="quote">
+    <p>引用块使用左侧粗边框、浅色背景与圆角。边框、背景与圆角均由绘制层按盒模型绘制，独立于文字排版。</p>
+  </div>
+
+  <div class="code">for (const auto&amp; rule : sheet.rules)<br>&nbsp;&nbsp;compute(&amp;rule);</div>
+
+  <pre class="plain">预格式化文本：
+  保留  空格
+    与缩进
+不进行换行折叠</pre>
+
+  <h2>三、图片与原子盒</h2>
+  <div class="figure">
+    <img src="assets/cover.png" width="300" height="170">
+    <div class="caption">本地图片 300 × 170 · 圆角与边框</div>
+  </div>
+
+  <p class="center">居中段落用于验证单行对齐：<strong>居中文本</strong>不参与两端对齐。</p>
+  <p class="right">右对齐说明文字 · 2026</p>
+
+  <h2>四、长文分页</h2>
+  <p>中文段落用于验证逐字断行、避头尾规则与两端对齐。混排 Latin text with mixed spacing，以及标点（，。！？）“引号”和括号（示例）都应当落在合理的断行位置。行高采用 1.7 倍字号，段间距由外边距决定。</p>
+  <p>分页时只允许在行盒边界断开，行内原子盒（图片、行内块）不可分割。段落、列表项与引用块各自保持内部的排版关系，页面底部不会重复绘制上一页的行。</p>
+  <p>嵌套结构中的外边距需要按块级流规则合并：相邻兄弟块上下外边距取较大值，父子块在无内边距与边框时同样合并。卡片、引用与列表项内部存在内边距，因此其子块的外边距不穿透父级。</p>
+  <div class="quote">
+    <p>引用内部的段落与外部段落共享同一套行内排版流程，边界由父级的内边距与边框决定。</p>
+  </div>
+  <p>继续填充正文，使内容跨越三页，用于观察分页边界处的行盒、原子盒与列表标记的绘制行为。分页边界分别落在段落中间、列表内部与引用之后，覆盖常见的断页位置。</p>
+
+  <ul>
+    <li>分页测试项一：跨页时列表标记跟随首行。</li>
+    <li>分页测试项二：项目文字在页边界处整体换页。</li>
+    <li>分页测试项三：后续内容与标记缩进保持一致。</li>
+  </ul>
+
+  <p>再补一段较长的说明，覆盖拉丁文与数字混排：Rendering pipeline stage 2 measures 1280 × 720 pixels at 60 frames per second，并在行内与中文混排，用于检查空白折叠与字间距。</p>
+
+  <div class="actions">
+    <span class="button">主按钮</span><span class="button ghost">次按钮</span><span class="hint">行内块按钮共享一行，基线对齐。</span>
+  </div>
+
+  <div class="footnote">注：本页为复杂结构测试样例，用于核对排版与绘制层的边界行为。</div>
+
+</body>
+</html>

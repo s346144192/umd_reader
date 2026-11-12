@@ -3,19 +3,45 @@
 #include <d2d1helper.h>
 
 #include <algorithm>
-#include <cmath>
-#include <unordered_set>
+
+#include "gfx/renderer_factory.h"
 
 namespace ui {
 namespace {
 
-uint32_t ColorKey(const D2D1_COLOR_F& color) {
-    const auto channel = [](float value) -> uint32_t {
-        const float clamped = std::clamp(value, 0.0f, 1.0f);
-        return static_cast<uint32_t>(clamped * 255.0f + 0.5f);
-    };
-    return (channel(color.a) << 24) | (channel(color.r) << 16) | (channel(color.g) << 8) |
-           channel(color.b);
+gfx::ColorF ToGfx(const D2D1_COLOR_F& color) {
+    return gfx::ColorF{color.r, color.g, color.b, color.a};
+}
+
+gfx::RectF ToGfx(const D2D1_RECT_F& rect) {
+    return gfx::RectF{rect.left, rect.top, rect.right, rect.bottom};
+}
+
+gfx::PointF ToGfx(D2D1_POINT_2F point) {
+    return gfx::PointF{point.x, point.y};
+}
+
+// 从 gfx 文本对象取出原生 DirectWrite 指针，并增加一次引用供兼容层的 ComPtr 持有。
+template <typename Native>
+ComPtr<Native> TakeNative(gfx::TextFormat& format) {
+    ComPtr<Native> native;
+    Native* raw = static_cast<Native*>(format.NativeHandle());
+    if (raw != nullptr) {
+        raw->AddRef();
+        native.Attach(raw);
+    }
+    return native;
+}
+
+template <typename Native>
+ComPtr<Native> TakeNative(gfx::TextLayout& layout) {
+    ComPtr<Native> native;
+    Native* raw = static_cast<Native*>(layout.NativeHandle());
+    if (raw != nullptr) {
+        raw->AddRef();
+        native.Attach(raw);
+    }
+    return native;
 }
 
 }  // namespace
@@ -61,340 +87,201 @@ ThemeColors ThemeByName(const std::wstring& name) {
     return theme;
 }
 
+RenderContext::RenderContext() = default;
+RenderContext::~RenderContext() = default;
+
 bool RenderContext::Initialize(HWND hwnd) {
     hwnd_ = hwnd;
-    dpi_ = GetDpiForWindow(hwnd_);
-
-    const HRESULT factoryResult = D2D1CreateFactory(
-        D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory_.GetAddressOf());
-    if (FAILED(factoryResult)) {
+    renderer_ = gfx::CreateRendererFromEnvironment();
+    if (!renderer_ || !renderer_->Initialize(hwnd)) {
+        renderer_.reset();
+        d2dInterop_ = nullptr;
         return false;
     }
-    const HRESULT writeResult =
-        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
-                            reinterpret_cast<IUnknown**>(writeFactory_.GetAddressOf()));
-    if (FAILED(writeResult)) {
-        return false;
-    }
-    const HRESULT wicResult = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
-                                               CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory_));
-    if (FAILED(wicResult)) {
-        return false;
-    }
-
+    d2dInterop_ = renderer_->Direct2DInterop();
+    dpi_ = renderer_->Dpi();
     initialized_ = true;
-    return CreateDeviceResources();
+    return true;
 }
 
 void RenderContext::Shutdown() {
-    DiscardDeviceResources();
-    formats_ = TextFormats{};
-    brushCache_.clear();
-    wicFactory_.Reset();
-    writeFactory_.Reset();
-    d2dFactory_.Reset();
+    ResetTextFormats();
+    if (renderer_) {
+        renderer_->Shutdown();
+        renderer_.reset();
+    }
+    d2dInterop_ = nullptr;
     initialized_ = false;
 }
 
-bool RenderContext::CreateDeviceResources() {
-    if (!d2dFactory_) {
-        return false;
-    }
-    renderTarget_.Reset();
-    const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
-        static_cast<float>(dpi_), static_cast<float>(dpi_));
-    const HRESULT result = d2dFactory_->CreateDCRenderTarget(
-        &properties, renderTarget_.GetAddressOf());
-    if (FAILED(result) || !renderTarget_) {
-        renderTarget_.Reset();
-        return false;
-    }
-    renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    renderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-    brushCache_.clear();
-    return true;
-}
-
-void RenderContext::DiscardDeviceResources() {
-    brushCache_.clear();
-    renderTarget_.Reset();
-}
-
 bool RenderContext::Resize(UINT widthPx, UINT heightPx, UINT dpi) {
-    if (!initialized_) {
+    if (!initialized_ || !renderer_) {
         return false;
     }
-    (void)widthPx;
-    (void)heightPx;
-    if (dpi != dpi_ || !renderTarget_) {
-        dpi_ = dpi;
-        renderTarget_.Reset();
-        brushCache_.clear();
-        return CreateDeviceResources();
-    }
-    return false;
+    const bool recreated = renderer_->Resize(widthPx, heightPx, dpi);
+    dpi_ = dpi;
+    return recreated;
 }
 
 bool RenderContext::BeginDraw(HDC deviceContext, const RECT& targetRect) {
-    if (!renderTarget_ && !CreateDeviceResources()) {
+    if (!renderer_) {
         return false;
     }
-    if (FAILED(renderTarget_->BindDC(deviceContext, &targetRect))) {
-        return false;
-    }
-    renderTarget_->BeginDraw();
-    return true;
+    return renderer_->Graphics().BeginFrame(deviceContext, targetRect);
 }
 
 bool RenderContext::EndDraw() {
-    if (!renderTarget_) {
+    if (!renderer_) {
         return false;
     }
-    const HRESULT result = renderTarget_->EndDraw();
-    if (result == D2DERR_RECREATE_TARGET) {
-        DiscardDeviceResources();
-        return false;
-    }
-    return true;
+    return renderer_->Graphics().EndFrame();
 }
 
 void RenderContext::Clear(const D2D1_COLOR_F& color) {
-    if (renderTarget_) {
-        renderTarget_->Clear(color);
+    if (renderer_) {
+        renderer_->Graphics().Clear(ToGfx(color));
     }
 }
 
 ID2D1SolidColorBrush* RenderContext::SolidBrush(const D2D1_COLOR_F& color) {
-    if (!renderTarget_) {
+    if (!d2dInterop_) {
         return nullptr;
     }
-    const uint32_t key = ColorKey(color);
-    const auto found = brushCache_.find(key);
-    if (found != brushCache_.end()) {
-        return found->second.Get();
-    }
-    ComPtr<ID2D1SolidColorBrush> brush;
-    renderTarget_->CreateSolidColorBrush(color, &brush);
-    if (!brush) {
-        return nullptr;
-    }
-    brushCache_.emplace(key, brush);
-    return brush.Get();
+    return d2dInterop_->SolidBrush(ToGfx(color));
 }
 
 void RenderContext::FillRect(const D2D1_RECT_F& rect, const D2D1_COLOR_F& color) {
-    ID2D1SolidColorBrush* brush = SolidBrush(color);
-    if (brush) {
-        renderTarget_->FillRectangle(rect, brush);
+    if (renderer_) {
+        renderer_->Graphics().FillRect(ToGfx(rect), ToGfx(color));
     }
 }
 
 void RenderContext::FillRoundedRect(const D2D1_RECT_F& rect, float radius,
                                     const D2D1_COLOR_F& color) {
-    ID2D1SolidColorBrush* brush = SolidBrush(color);
-    if (brush) {
-        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush);
+    if (renderer_) {
+        renderer_->Graphics().FillRoundedRect(ToGfx(rect), radius, ToGfx(color));
     }
 }
 
 void RenderContext::StrokeRoundedRect(const D2D1_RECT_F& rect, float radius,
                                       const D2D1_COLOR_F& color, float strokeWidth) {
-    ID2D1SolidColorBrush* brush = SolidBrush(color);
-    if (brush) {
-        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush,
-                                           strokeWidth);
+    if (renderer_) {
+        renderer_->Graphics().StrokeRoundedRect(ToGfx(rect), radius, ToGfx(color), strokeWidth);
     }
 }
 
 void RenderContext::DrawLine(D2D1_POINT_2F start, D2D1_POINT_2F end, const D2D1_COLOR_F& color,
                              float strokeWidth) {
-    ID2D1SolidColorBrush* brush = SolidBrush(color);
-    if (brush) {
-        renderTarget_->DrawLine(start, end, brush, strokeWidth);
+    if (renderer_) {
+        renderer_->Graphics().DrawLine(ToGfx(start), ToGfx(end), ToGfx(color), strokeWidth);
     }
 }
 
 void RenderContext::DrawTextBlock(const std::wstring& text, const D2D1_RECT_F& rect,
                                   IDWriteTextFormat* format, const D2D1_COLOR_F& color) {
-    ID2D1SolidColorBrush* brush = SolidBrush(color);
-    if (brush && format) {
-        renderTarget_->DrawTextW(text.c_str(), static_cast<UINT32>(text.size()), format, rect,
-                                 brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    if (d2dInterop_) {
+        d2dInterop_->DrawTextNative(text, ToGfx(rect), format, ToGfx(color));
     }
 }
 
 void RenderContext::DrawLayout(IDWriteTextLayout* layout, D2D1_POINT_2F origin,
                                const D2D1_COLOR_F& color) {
-    ID2D1SolidColorBrush* brush = SolidBrush(color);
-    if (brush && layout) {
-        renderTarget_->DrawTextLayout(origin, layout, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    if (d2dInterop_) {
+        d2dInterop_->DrawLayoutNative(layout, ToGfx(origin), ToGfx(color));
     }
 }
 
 void RenderContext::PushClip(const D2D1_RECT_F& rect) {
-    if (renderTarget_) {
-        renderTarget_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_ALIASED);
+    if (renderer_) {
+        renderer_->Graphics().PushClip(ToGfx(rect));
     }
 }
 
 void RenderContext::PopClip() {
-    if (renderTarget_) {
-        renderTarget_->PopAxisAlignedClip();
+    if (renderer_) {
+        renderer_->Graphics().PopClip();
     }
 }
 
 void RenderContext::DrawBitmap(ID2D1Bitmap* bitmap, const D2D1_RECT_F& rect, float opacity) {
-    if (!renderTarget_ || !bitmap) {
-        return;
+    if (d2dInterop_) {
+        d2dInterop_->DrawBitmapNative(bitmap, ToGfx(rect), opacity);
     }
-    const D2D1_SIZE_F source = bitmap->GetSize();
-    const float destinationWidth = rect.right - rect.left;
-    const float destinationHeight = rect.bottom - rect.top;
-    if (source.width <= 0.0f || source.height <= 0.0f || destinationWidth <= 0.0f ||
-        destinationHeight <= 0.0f) {
-        return;
-    }
-
-    const float scale =
-        std::max(destinationWidth / source.width, destinationHeight / source.height);
-    const float visibleWidth = destinationWidth / scale;
-    const float visibleHeight = destinationHeight / scale;
-    const D2D1_RECT_F sourceRect =
-        D2D1::RectF((source.width - visibleWidth) / 2.0f, (source.height - visibleHeight) / 2.0f,
-                    (source.width + visibleWidth) / 2.0f, (source.height + visibleHeight) / 2.0f);
-    renderTarget_->DrawBitmap(bitmap, rect, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                              sourceRect);
 }
 
 ComPtr<ID2D1Bitmap> RenderContext::LoadBitmap(const std::filesystem::path& path) {
-    if (!wicFactory_ || !renderTarget_ || path.empty()) {
+    if (!d2dInterop_) {
         return nullptr;
     }
-    ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                      WICDecodeMetadataCacheOnLoad, &decoder))) {
-        return nullptr;
-    }
-    ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) {
-        return nullptr;
-    }
-    ComPtr<IWICFormatConverter> converter;
-    if (FAILED(wicFactory_->CreateFormatConverter(&converter))) {
-        return nullptr;
-    }
-    if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                     WICBitmapDitherTypeNone, nullptr, 0.0f,
-                                     WICBitmapPaletteTypeCustom))) {
-        return nullptr;
-    }
-    ComPtr<ID2D1Bitmap> bitmap;
-    if (FAILED(renderTarget_->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &bitmap))) {
-        return nullptr;
-    }
-    return bitmap;
+    return d2dInterop_->LoadBitmapFile(path);
 }
 
 ComPtr<ID2D1Bitmap> RenderContext::LoadScaledBitmap(const std::filesystem::path& path,
                                                     float maxWidth, float maxHeight,
                                                     uint32_t& sourceWidth,
                                                     uint32_t& sourceHeight) {
-    sourceWidth = 0;
-    sourceHeight = 0;
-    if (!wicFactory_ || !renderTarget_ || path.empty() || maxWidth <= 0.0f || maxHeight <= 0.0f) {
+    if (!d2dInterop_) {
+        sourceWidth = 0;
+        sourceHeight = 0;
         return nullptr;
     }
-    ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wicFactory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                      WICDecodeMetadataCacheOnLoad, &decoder))) {
-        return nullptr;
-    }
-    ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(decoder->GetFrame(0, &frame))) {
-        return nullptr;
-    }
-    UINT frameWidth = 0;
-    UINT frameHeight = 0;
-    if (FAILED(frame->GetSize(&frameWidth, &frameHeight)) || frameWidth == 0 || frameHeight == 0) {
-        return nullptr;
-    }
-    sourceWidth = frameWidth;
-    sourceHeight = frameHeight;
+    return d2dInterop_->LoadScaledBitmapFile(path, maxWidth, maxHeight, sourceWidth,
+                                             sourceHeight);
+}
 
-    const float scale =
-        std::min(1.0f, std::min(maxWidth / static_cast<float>(frameWidth),
-                                maxHeight / static_cast<float>(frameHeight)));
-    ComPtr<IWICBitmapSource> scaledSource;
-    ComPtr<IWICBitmapScaler> scaler;
-    if (scale < 1.0f) {
-        const UINT targetWidth = static_cast<UINT>(std::max(1.0f, std::round(frameWidth * scale)));
-        const UINT targetHeight = static_cast<UINT>(std::max(1.0f, std::round(frameHeight * scale)));
-        if (FAILED(wicFactory_->CreateBitmapScaler(&scaler))) {
-            return nullptr;
-        }
-        if (FAILED(scaler->Initialize(frame.Get(), targetWidth, targetHeight,
-                                      WICBitmapInterpolationModeFant))) {
-            return nullptr;
-        }
-        scaledSource = scaler;
-    } else {
-        scaledSource = frame;
+ComPtr<ID2D1Bitmap> RenderContext::CreateBitmapFromPixels(const uint32_t* pixels, uint32_t width,
+                                                          uint32_t height) {
+    if (!d2dInterop_) {
+        return nullptr;
     }
+    return d2dInterop_->CreateBitmapFromPixels(pixels, width, height);
+}
 
-    ComPtr<IWICFormatConverter> converter;
-    if (FAILED(wicFactory_->CreateFormatConverter(&converter))) {
-        return nullptr;
-    }
-    if (FAILED(converter->Initialize(scaledSource.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                     WICBitmapDitherTypeNone, nullptr, 0.0f,
-                                     WICBitmapPaletteTypeCustom))) {
-        return nullptr;
-    }
-    ComPtr<ID2D1Bitmap> bitmap;
-    if (FAILED(renderTarget_->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &bitmap))) {
-        return nullptr;
-    }
-    return bitmap;
+void RenderContext::ResetTextFormats() {
+    formats_ = TextFormats{};
+    formatLookup_.clear();
+    ownedFormats_.clear();
 }
 
 bool RenderContext::CreateTextFormats(const std::wstring& fontFamily, float bodySize,
                                       float lineSpacing, float noteSize) {
-    if (!writeFactory_) {
+    if (!renderer_) {
         return false;
     }
+    ResetTextFormats();
     noteSize = std::clamp(noteSize, 10.0f, 28.0f);
+    gfx::TextEngine& engine = renderer_->Text();
 
-    const auto createFormat = [this, &fontFamily](
-                                  float size, DWRITE_FONT_WEIGHT weight,
-                                  DWRITE_TEXT_ALIGNMENT horizontalAlignment,
-                                  DWRITE_PARAGRAPH_ALIGNMENT verticalAlignment,
-                                  DWRITE_WORD_WRAPPING wrapping,
-                                  ComPtr<IDWriteTextFormat>& format) -> bool {
-        format.Reset();
-        HRESULT result = writeFactory_->CreateTextFormat(
-            fontFamily.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, size, L"zh-cn", &format);
-        if (FAILED(result) || !format) {
-            result = writeFactory_->CreateTextFormat(
-                L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                size, L"zh-cn", &format);
-            if (FAILED(result) || !format) {
-                return false;
-            }
+    const auto createFormat = [this, &engine](const gfx::TextStyle& style,
+                                              ComPtr<IDWriteTextFormat>& format) -> bool {
+        std::unique_ptr<gfx::TextFormat> created = engine.CreateFormat(style);
+        if (!created) {
+            return false;
         }
-        format->SetTextAlignment(horizontalAlignment);
-        format->SetParagraphAlignment(verticalAlignment);
-        format->SetWordWrapping(wrapping);
-
-        DWRITE_TRIMMING trimming{};
-        trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
-        ComPtr<IDWriteInlineObject> ellipsis;
-        if (SUCCEEDED(writeFactory_->CreateEllipsisTrimmingSign(format.Get(), &ellipsis))) {
-            format->SetTrimming(&trimming, ellipsis.Get());
+        ComPtr<IDWriteTextFormat> native = TakeNative<IDWriteTextFormat>(*created);
+        if (!native) {
+            return false;
         }
+        IDWriteTextFormat* raw = native.Get();
+        formatLookup_[raw] = created.get();
+        ownedFormats_.push_back(std::move(created));
+        format = std::move(native);
         return true;
+    };
+
+    const auto makeStyle = [&fontFamily](float size, gfx::TextWeight weight,
+                                         gfx::TextAlignment horizontalAlignment,
+                                         gfx::ParagraphAlignment verticalAlignment,
+                                         gfx::WordWrapping wrapping) {
+        gfx::TextStyle style;
+        style.fontFamily = fontFamily;
+        style.fontSize = size;
+        style.weight = weight;
+        style.textAlignment = horizontalAlignment;
+        style.paragraphAlignment = verticalAlignment;
+        style.wrapping = wrapping;
+        style.ellipsisTrimming = true;
+        return style;
     };
 
     constexpr float kTitleSize = 27.0f;
@@ -405,48 +292,69 @@ bool RenderContext::CreateTextFormats(const std::wstring& fontFamily, float body
     constexpr float kButtonSize = 15.0f;
     constexpr float kHeroSize = 54.0f;
 
-    if (!createFormat(kTitleSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP,
+    gfx::TextStyle bodyStyle = makeStyle(bodySize, gfx::TextWeight::Normal,
+                                         gfx::TextAlignment::Leading,
+                                         gfx::ParagraphAlignment::Near, gfx::WordWrapping::Wrap);
+    bodyStyle.uniformLineSpacing = true;
+    bodyStyle.lineSpacing = bodySize * lineSpacing;
+    bodyStyle.baseline = bodySize * 1.18f;
+
+    gfx::TextStyle noteStyle = makeStyle(noteSize, gfx::TextWeight::Normal,
+                                         gfx::TextAlignment::Leading,
+                                         gfx::ParagraphAlignment::Near, gfx::WordWrapping::Wrap);
+    noteStyle.uniformLineSpacing = true;
+    noteStyle.lineSpacing = noteSize * 1.35f;
+    noteStyle.baseline = noteSize * 1.18f;
+
+    if (!createFormat(makeStyle(kTitleSize, gfx::TextWeight::SemiBold,
+                                gfx::TextAlignment::Leading, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::Wrap),
                       formats_.title) ||
-        !createFormat(kSectionSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP,
+        !createFormat(makeStyle(kSectionSize, gfx::TextWeight::SemiBold,
+                                gfx::TextAlignment::Leading, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::Wrap),
                       formats_.section) ||
-        !createFormat(kLabelSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP,
+        !createFormat(makeStyle(kLabelSize, gfx::TextWeight::SemiBold,
+                                gfx::TextAlignment::Leading, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::Wrap),
                       formats_.label) ||
-        !createFormat(kItemSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(makeStyle(kItemSize, gfx::TextWeight::Normal,
+                                gfx::TextAlignment::Leading, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::NoWrap),
                       formats_.listItem) ||
-        !createFormat(bodySize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP, formats_.body) ||
-        !createFormat(kSmallSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(bodyStyle, formats_.body) ||
+        !createFormat(makeStyle(kSmallSize, gfx::TextWeight::Normal,
+                                gfx::TextAlignment::Leading, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::NoWrap),
                       formats_.caption) ||
-        !createFormat(kSmallSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_TRAILING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(makeStyle(kSmallSize, gfx::TextWeight::Normal,
+                                gfx::TextAlignment::Trailing, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::NoWrap),
                       formats_.captionRight) ||
-        !createFormat(kLabelSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER,
-                      DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(makeStyle(kSmallSize, gfx::TextWeight::Normal,
+                                gfx::TextAlignment::Leading, gfx::ParagraphAlignment::Near,
+                                gfx::WordWrapping::Wrap),
+                      formats_.captionWrap) ||
+        !createFormat(makeStyle(kLabelSize, gfx::TextWeight::Normal,
+                                gfx::TextAlignment::Center, gfx::ParagraphAlignment::Center,
+                                gfx::WordWrapping::NoWrap),
                       formats_.centered) ||
-        !createFormat(kButtonSize, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
-                      DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(makeStyle(kButtonSize, gfx::TextWeight::SemiBold,
+                                gfx::TextAlignment::Center, gfx::ParagraphAlignment::Center,
+                                gfx::WordWrapping::NoWrap),
                       formats_.button) ||
-        !createFormat(kSmallSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER,
-                      DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(makeStyle(kSmallSize, gfx::TextWeight::Normal,
+                                gfx::TextAlignment::Center, gfx::ParagraphAlignment::Center,
+                                gfx::WordWrapping::NoWrap),
                       formats_.buttonSmall) ||
-        !createFormat(kHeroSize, DWRITE_FONT_WEIGHT_LIGHT, DWRITE_TEXT_ALIGNMENT_CENTER,
-                      DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+        !createFormat(makeStyle(kHeroSize, gfx::TextWeight::Light,
+                                gfx::TextAlignment::Center, gfx::ParagraphAlignment::Center,
+                                gfx::WordWrapping::NoWrap),
                       formats_.hero) ||
-        !createFormat(noteSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING,
-                      DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP,
-                      formats_.note)) {
+        !createFormat(noteStyle, formats_.note)) {
+        ResetTextFormats();
         return false;
     }
-
-    formats_.body->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, bodySize * lineSpacing,
-                                  bodySize * 1.18f);
-    formats_.note->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, noteSize * 1.35f,
-                                  noteSize * 1.18f);
     return true;
 }
 
@@ -454,11 +362,26 @@ ComPtr<IDWriteTextLayout> RenderContext::CreateLayout(const std::wstring& text,
                                                       IDWriteTextFormat* format, float width,
                                                       float maxHeight) {
     ComPtr<IDWriteTextLayout> layout;
-    if (!writeFactory_ || !format || text.empty() || width <= 0.0f) {
+    if (!renderer_ || !format || text.empty() || width <= 0.0f) {
         return layout;
     }
-    writeFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format, width,
-                                    maxHeight, &layout);
+    const auto found = formatLookup_.find(format);
+    if (found != formatLookup_.end()) {
+        std::unique_ptr<gfx::TextLayout> created =
+            renderer_->Text().CreateLayout(text, *found->second, width, maxHeight);
+        if (created) {
+            layout = TakeNative<IDWriteTextLayout>(*created);
+        }
+        return layout;
+    }
+
+    // 未通过 CreateTextFormats 创建的格式仍按原有路径创建，保持兼容。
+    IDWriteFactory* factory = WriteFactory();
+    if (!factory) {
+        return layout;
+    }
+    factory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format, width,
+                              maxHeight, &layout);
     return layout;
 }
 
@@ -468,12 +391,21 @@ ComPtr<IDWriteTextLayout> RenderContext::CreateBodyLayout(const std::wstring& te
 }
 
 float RenderContext::MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format) const {
-    if (!writeFactory_ || !format || text.empty()) {
+    if (!renderer_ || !format || text.empty()) {
+        return 0.0f;
+    }
+    const auto found = formatLookup_.find(format);
+    if (found != formatLookup_.end()) {
+        return renderer_->Text().MeasureWidth(text, *found->second);
+    }
+
+    IDWriteFactory* factory = WriteFactory();
+    if (!factory) {
         return 0.0f;
     }
     ComPtr<IDWriteTextLayout> layout;
-    writeFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format, 4096.0f,
-                                    200.0f, &layout);
+    factory->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format, 4096.0f,
+                              200.0f, &layout);
     if (!layout) {
         return 0.0f;
     }
@@ -483,96 +415,22 @@ float RenderContext::MeasureTextWidth(const std::wstring& text, IDWriteTextForma
 }
 
 std::vector<FontFamilyName> RenderContext::SystemFontFamilies() const {
-    std::vector<FontFamilyName> families;
-    if (!writeFactory_) {
-        return families;
+    if (!renderer_) {
+        return std::vector<FontFamilyName>();
     }
-    ComPtr<IDWriteFontCollection> collection;
-    if (FAILED(writeFactory_->GetSystemFontCollection(&collection, FALSE)) || !collection) {
-        return families;
-    }
+    return renderer_->Text().SystemFontFamilies();
+}
 
-    const auto localeIndex = [](IDWriteLocalizedStrings* strings, const wchar_t* locale) {
-        UINT32 index = 0;
-        BOOL exists = FALSE;
-        if (strings == nullptr ||
-            FAILED(strings->FindLocaleName(locale, &index, &exists)) || !exists) {
-            return UINT32_MAX;
-        }
-        return index;
-    };
-    const auto localizedText = [](IDWriteLocalizedStrings* strings, UINT32 index) {
-        if (strings == nullptr || index == UINT32_MAX) {
-            return std::wstring();
-        }
-        UINT32 length = 0;
-        if (FAILED(strings->GetStringLength(index, &length)) || length == 0) {
-            return std::wstring();
-        }
-        std::vector<wchar_t> buffer(length + 1, L'\0');
-        if (FAILED(strings->GetString(index, buffer.data(), length + 1))) {
-            return std::wstring();
-        }
-        return std::wstring(buffer.data(), length);
-    };
+IDWriteFactory* RenderContext::WriteFactory() const {
+    return d2dInterop_ ? d2dInterop_->WriteFactory() : nullptr;
+}
 
-    std::unordered_set<std::wstring> seen;
-    const UINT32 familyCount = collection->GetFontFamilyCount();
-    for (UINT32 i = 0; i < familyCount; ++i) {
-        ComPtr<IDWriteFontFamily> family;
-        if (FAILED(collection->GetFontFamily(i, &family)) || !family) {
-            continue;
-        }
-        ComPtr<IDWriteFont> font;
-        if (FAILED(family->GetFont(0, &font)) || !font) {
-            continue;
-        }
-        // 只保留包含中文字形的字族，避免列出纯符号或图标字体。
-        BOOL hasHan = FALSE;
-        if (FAILED(font->HasCharacter(0x4E2D, &hasHan)) || !hasHan) {
-            continue;
-        }
-        ComPtr<IDWriteLocalizedStrings> names;
-        if (FAILED(family->GetFamilyNames(&names)) || !names) {
-            continue;
-        }
-        const UINT32 nameCount = names->GetCount();
-        if (nameCount == 0) {
-            continue;
-        }
+gfx::BackendKind RenderContext::Backend() const {
+    return renderer_ ? renderer_->Capabilities().backend : gfx::BackendKind::Direct2D;
+}
 
-        UINT32 zhIndex = localeIndex(names.Get(), L"zh-cn");
-        if (zhIndex == UINT32_MAX) {
-            zhIndex = localeIndex(names.Get(), L"zh-hans");
-        }
-        if (zhIndex == UINT32_MAX) {
-            zhIndex = localeIndex(names.Get(), L"zh");
-        }
-        const UINT32 enIndex = localeIndex(names.Get(), L"en-us");
-
-        // 界面显示优先中文名，设置保存英文族名，DirectWrite 与旧设置都能直接匹配。
-        const UINT32 displayIndex = zhIndex != UINT32_MAX ? zhIndex : (enIndex != UINT32_MAX ? enIndex : 0);
-        const UINT32 canonicalIndex = enIndex != UINT32_MAX ? enIndex : displayIndex;
-        FontFamilyName entry;
-        entry.canonical = localizedText(names.Get(), canonicalIndex);
-        entry.localized = localizedText(names.Get(), displayIndex);
-        if (entry.canonical.empty()) {
-            continue;
-        }
-        if (entry.localized.empty()) {
-            entry.localized = entry.canonical;
-        }
-        if (!seen.insert(entry.canonical).second) {
-            continue;
-        }
-        families.push_back(std::move(entry));
-    }
-
-    std::sort(families.begin(), families.end(),
-              [](const FontFamilyName& first, const FontFamilyName& second) {
-                  return first.localized < second.localized;
-              });
-    return families;
+std::wstring RenderContext::BackendName() const {
+    return gfx::BackendDisplayName(Backend());
 }
 
 }  // namespace ui

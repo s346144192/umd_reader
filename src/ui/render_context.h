@@ -3,24 +3,25 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
-#include <wincodec.h>
 #include <wrl/client.h>
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "gfx/d2d_interop.h"
+#include "gfx/renderer.h"
+#include "gfx/types.h"
 
 namespace ui {
 
 using Microsoft::WRL::ComPtr;
 
-// 系统字族条目：localized 为界面显示名（优先中文），canonical 为 DirectWrite 使用的族名。
-struct FontFamilyName {
-    std::wstring localized;
-    std::wstring canonical;
-};
+// 字体族条目来自 gfx 的排版引擎，此处保留原名字以便现有界面代码继续使用。
+using FontFamilyName = gfx::FontFamilyName;
 
 struct ThemeColors {
     D2D1_COLOR_F background{};
@@ -44,6 +45,8 @@ struct TextFormats {
     ComPtr<IDWriteTextFormat> body;        // 正文
     ComPtr<IDWriteTextFormat> caption;      // 辅助文字
     ComPtr<IDWriteTextFormat> captionRight; // 右对齐辅助文字
+    // 自动换行的辅助文字，用于成就说明等可能超出一行的文案。
+    ComPtr<IDWriteTextFormat> captionWrap;
     ComPtr<IDWriteTextFormat> centered;    // 居中提示
     ComPtr<IDWriteTextFormat> button;      // 按钮文字
     ComPtr<IDWriteTextFormat> buttonSmall; // 小按钮文字
@@ -51,8 +54,13 @@ struct TextFormats {
     ComPtr<IDWriteTextFormat> note;        // 标注文字（比正文小）
 };
 
+// 阅读界面的绘制入口。底层设备资源与图元绘制由 gfx 渲染后端承载；
+// 本类保留原有 Direct2D / DirectWrite 公开签名，作为尚未迁移界面的兼容适配层。
 class RenderContext {
 public:
+    RenderContext();
+    ~RenderContext();
+
     bool Initialize(HWND hwnd);
     void Shutdown();
 
@@ -85,6 +93,10 @@ public:
     ComPtr<ID2D1Bitmap> LoadScaledBitmap(const std::filesystem::path& path, float maxWidth,
                                          float maxHeight, uint32_t& sourceWidth,
                                          uint32_t& sourceHeight);
+    // 由内存中的 BGRA 像素创建位图，每行从上到下，Alpha 按不透明处理。
+    // 渲染目标重建后已创建的位图随之失效，需要重新创建。
+    ComPtr<ID2D1Bitmap> CreateBitmapFromPixels(const uint32_t* pixels, uint32_t width,
+                                               uint32_t height);
 
     bool CreateTextFormats(const std::wstring& fontFamily, float bodySize, float lineSpacing,
                            float noteSize);
@@ -97,17 +109,22 @@ public:
     float MeasureTextWidth(const std::wstring& text, IDWriteTextFormat* format) const;
     // 枚举系统字族中可显示中文的字体，供阅读设置选择。
     std::vector<FontFamilyName> SystemFontFamilies() const;
-    IDWriteFactory* WriteFactory() const { return writeFactory_.Get(); }
+    IDWriteFactory* WriteFactory() const;
+
+    // 当前实际使用的渲染后端；启动时按环境变量选择，无法识别时回退 Direct2D。
+    gfx::BackendKind Backend() const;
+    std::wstring BackendName() const;
 
 private:
-    bool CreateDeviceResources();
-    void DiscardDeviceResources();
+    void ResetTextFormats();
 
-    ComPtr<ID2D1DCRenderTarget> renderTarget_;
-    ComPtr<ID2D1Factory> d2dFactory_;
-    ComPtr<IDWriteFactory> writeFactory_;
-    ComPtr<IWICImagingFactory> wicFactory_;
-    std::unordered_map<uint32_t, ComPtr<ID2D1SolidColorBrush>> brushCache_;
+    // gfx 渲染后端持有工厂、设备无关的绘制画布与排版引擎。
+    std::unique_ptr<gfx::Renderer> renderer_;
+    // Direct2D 后端的原生互操作入口，供本兼容层绘制文本与位图。
+    gfx::D2DInterop* d2dInterop_ = nullptr;
+    // 保留排版对象的所有权，并把原生格式指针映射到 gfx 的文本格式对象。
+    std::vector<std::unique_ptr<gfx::TextFormat>> ownedFormats_;
+    std::unordered_map<const IDWriteTextFormat*, gfx::TextFormat*> formatLookup_;
     TextFormats formats_;
     HWND hwnd_ = nullptr;
     UINT dpi_ = 96;

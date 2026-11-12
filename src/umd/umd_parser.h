@@ -8,10 +8,14 @@
 namespace umd {
 
 // 章节信息。偏移与长度均以 UTF-16 码元为单位，与 UMD 正文编码一致。
+// 按原版页面阅读的 PDF 使用 pageIndex 定位章节，此时偏移与长度均为 0。
+// 章节按目录树的先序排列：父节点在前，子节点紧随其后，level 表示层级。
 struct Chapter {
     std::wstring title;
     uint32_t charOffset = 0;
     uint32_t charLength = 0;
+    uint32_t pageIndex = 0;  // 0 起页序号，仅 PDF 按页阅读使用
+    uint8_t level = 1;       // 目录层级，从 1 开始
 };
 
 struct ImageResource {
@@ -19,8 +23,18 @@ struct ImageResource {
     std::string mimeType;
 };
 
+// PDF 逐页信息：页面尺寸与文本层标记。按原版页面阅读时
+// charOffset 与 charLength 保持为 0；hasText 仅用于诊断，不参与阅读流程。
+struct PdfPageText {
+    uint32_t charOffset = 0;
+    uint32_t charLength = 0;
+    bool hasText = false;  // 文本层诊断标记，按页阅读不使用
+    float widthPt = 0.0f;
+    float heightPt = 0.0f;
+};
+
 struct Book {
-    uint8_t formatType = 0;  // 1 = 文本格式，2 = 动漫格式
+    uint8_t formatType = 0;  // 0 = 纯文本，1 = UMD 文本，2 = UMD 动漫，3 = PDF
     std::wstring title;
     std::wstring author;
     std::wstring year;
@@ -39,6 +53,8 @@ struct Book {
     std::vector<uint8_t> coverBytes;
     std::string coverMimeType;
     std::vector<ImageResource> images;
+    // 仅 PDF 使用：逐页文本标记与页面尺寸，用于区分可重排页面与需按原版显示的页面。
+    std::vector<PdfPageText> pdfPages;
     std::vector<std::wstring> warnings;
 
     uint32_t ContentCharCount() const { return static_cast<uint32_t>(content.size()); }
@@ -49,13 +65,18 @@ bool ParseFile(const std::filesystem::path& path, Book& book, std::wstring& erro
 // 解析纯文本文件（支持 UTF-8、UTF-16 与系统 ANSI 编码），并自动识别章节。
 bool ParseTextFile(const std::filesystem::path& path, Book& book, std::wstring& error);
 
-// 按扩展名分派：.txt 走文本解析，其余按 UMD 解析。
+// 解析 PDF 文件。按原版页面阅读：读取页面尺寸、页数与大纲，
+// 章节按目标页序号定位；不提取文本层，导入与打开无需逐页解码。
+bool ParsePdfFile(const std::filesystem::path& path, Book& book, std::wstring& error);
+
+// 按扩展名分派：.txt 走文本解析，.pdf 走 PDF 解析，其余按 UMD 解析。
 bool ParseBookFile(const std::filesystem::path& path, Book& book, std::wstring& error);
 
-// 按指定层级单位重新识别章节。units 按层级从高到低排列（最多三级，例如 {集, 章, 节}），
-// 仅「集」这类上级标题不会成为独立章节，最终以最深层标题分段，标题中带上上级标题。
+// 按指定单位提取章节。hierarchical 为 true 时 units 按层级从高到低排列，
+// 用于「集 → 章 → 节」这类多级目录；为 false 时所有单位视为同级标题（自动识别）。
+// 章节按目录树的先序排列，level 表示层级。
 std::vector<Chapter> DetectChaptersByUnits(const std::wstring& text,
-                                           const std::vector<wchar_t>& units);
+                                           const std::vector<wchar_t>& units, bool hierarchical);
 
 // 使用默认单位集合（章、回、节、卷、篇、幕）识别章节，与纯文本首次解析的结果一致。
 std::vector<Chapter> DetectDefaultChapters(const std::wstring& text);

@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -18,6 +19,9 @@
 #include <vector>
 
 #include "data/library.h"
+#include "data/reading_log.h"
+#include "net/lan_share.h"
+#include "reader/fixed_page_reader.h"
 #include "ui/chapter_display.h"
 #include "ui/reader_pager.h"
 #include "ui/render_context.h"
@@ -37,13 +41,41 @@ private:
     enum class ViewMode { Shelf, Reader };
     enum class PanelMode { None, Toc, Bookmarks, Search, Settings, Images, NoteEditor, Chat };
     enum class Gesture { Default, Highlight, EraseHighlight, Note, EraseNote, Copy, Speech };
-    enum class ChatFocus { None, BaseUrl, ApiKey, Model, Message };
+    enum class ChatFocus {
+        None,
+        Name,
+        BaseUrl,
+        ApiKey,
+        Model,
+        SpeechBaseUrl,
+        SpeechApiKey,
+        SpeechModel,
+        SpeechVoice,
+        ImageBaseUrl,
+        ImageApiKey,
+        ImageModel,
+        VideoBaseUrl,
+        VideoApiKey,
+        VideoModel,
+        ContextTokens,
+        GeneratePrompt,
+        Message
+    };
 
     enum class HitKind {
         AddBook,
         OpenDataFolder,
         ShelfSettings,
         ShelfSettingsClose,
+        // 局域网分享入口与浮层控件。
+        OpenLanShare,
+        LanShareClose,
+        LanShareToggle,
+        LanAddressInput,
+        LanConnect,
+        LanDownload,
+        LanScan,
+        LanConnectHost,
         // 全局设置中的「设置快捷键」入口。
         OpenShortcutSettings,
         ShelfSearchBox,
@@ -96,7 +128,43 @@ private:
         OpenAiSettings,
         AiSettingsSave,
         AiSettingsClose,
+        // AI 设置分页与多配置管理。
+        AiTabChat,
+        AiTabSpeech,
+        AiTabImage,
+        AiTabVideo,
+        AiConfigPrev,
+        AiConfigNext,
+        AiConfigAdd,
+        AiConfigDelete,
+        AiConfigName,
+        AiSpeechEngineBuiltin,
+        AiSpeechEngineAi,
+        AiSpeechBaseUrl,
+        AiSpeechApiKey,
+        AiSpeechModel,
+        AiSpeechVoice,
+        AiImageBaseUrl,
+        AiImageApiKey,
+        AiImageModel,
+        AiVideoBaseUrl,
+        AiVideoApiKey,
+        AiVideoModel,
+        // 当前对话配置的上下文窗口上限。
+        ChatContextTokens,
+        // 对话底部的上下文占用指示（仅用于悬停提示）。
+        ChatContextUsage,
+        // AI 图像/视频生成弹框。
+        AiGenerateOpen,
+        AiGenerateClose,
+        AiGenerateTabImage,
+        AiGenerateTabVideo,
+        AiGeneratePrompt,
+        AiGenerateRun,
+        AiGenerateOpenResult,
         ChapterItem,
+        // 目录树中父节点的展开与折叠。
+        ChapterFold,
         BookmarkItem,
         AddBookmark,
         RemoveBookmark,
@@ -119,6 +187,11 @@ private:
         BackgroundImport,
         ScrollModeLine,
         ScrollModePage,
+        // PDF 页面视图切换：单页与左右双页。
+        PdfPageLayout,
+        // PDF 页面缩放：缩小与放大。
+        PdfZoomOut,
+        PdfZoomIn,
         ReaderScrollbar,
         // 目录与书签列表的竖向滚动条。
         PanelScrollbar,
@@ -134,7 +207,12 @@ private:
         // 快捷键映射窗口：行、关闭与恢复默认。
         ShortcutRow,
         ShortcutClose,
-        ShortcutReset
+        ShortcutReset,
+        // 阅读升级：右上角等级芯片、成就浮层及其月份切换与关闭。
+        OpenReadingAchievements,
+        ReadingAchievementsClose,
+        ReadingCalendarPrev,
+        ReadingCalendarNext
     };
 
     struct HitRegion {
@@ -167,6 +245,8 @@ private:
     void OnMouseLeave();
     void OnLeftButtonDown(int xPixels, int yPixels);
     void OnLeftButtonUp(int xPixels, int yPixels);
+    // 鼠标中键按下：PDF 放大后用于拖动页面。
+    void OnMiddleButtonDown(int xPixels, int yPixels);
     // 返回是否已作为双击手势处理；未处理时由消息分发按普通单击继续处理，
     // 避免窗口类启用 CS_DBLCLKS 后第二次点击只收到双击消息而被丢弃。
     bool OnLeftButtonDoubleClick(int xPixels, int yPixels);
@@ -179,6 +259,27 @@ private:
 
     void DrawShelf(const ThemeColors& colors);
     void DrawReader(const ThemeColors& colors);
+    // 阅读升级：右上角等级芯片与阅读成就浮层。
+    void DrawReadingLevelChip(const ThemeColors& colors, const D2D1_RECT_F& rect);
+    void DrawReadingAchievements(const ThemeColors& colors);
+    D2D1_RECT_F ReadingAchievementsPanelRect() const;
+    D2D1_RECT_F ReadingAchievementsCloseRect() const;
+    D2D1_RECT_F ReadingCalendarPrevRect() const;
+    D2D1_RECT_F ReadingCalendarNextRect() const;
+    void OpenReadingAchievements();
+    void CloseReadingAchievements();
+    // 阅读计时：仅在阅读页前台阅读时累计，并周期性落盘。
+    void TickReading();
+    bool ReadingCountsTime() const;
+    void ApplyReadingSeconds(uint64_t seconds);
+    void FlushReadingStats(bool force);
+    // 结算当前章节的有效阅读：停留达到阈值时增加该章的阅读次数。
+    void CommitChapterVisit();
+    // 重新计算徽章有效期与展示数据。
+    void RefreshReadingBadges();
+    // 阅读秒数大于 0 的书籍数量与全部书籍的阅读秒数。
+    int ReadBookCount() const;
+    std::vector<uint64_t> BookReadingSeconds() const;
     // 弹出菜单：工具栏入口与右键都使用同一套条目与绘制。
     struct MenuEntry {
         std::wstring id;
@@ -235,6 +336,10 @@ private:
         ComPtr<IDWriteTextLayout> thinkingLayout;
         D2D1_RECT_F thinkingRect{};
         D2D1_RECT_F thinkingToggleRect{};
+        // AI 回复底部的 token 统计。
+        std::wstring usage;
+        float usageHeight = 0.0f;
+        D2D1_RECT_F usageRect{};
     };
     void BuildChatBubbles(const D2D1_RECT_F& rect, std::vector<ChatBubble>& bubbles);
     bool BeginChatSelection(float x, float y);
@@ -264,6 +369,20 @@ private:
     D2D1_RECT_F FontPickerListRect() const;
     std::wstring CurrentFontDisplayName() const;
     void SelectFontFamily(const std::wstring& family);
+    // AI 设置：分页、多配置切换与增删。
+    void StepAiChatConfig(int direction);
+    void AddAiChatConfig();
+    void DeleteAiChatConfig();
+    // AI 图像/视频生成弹框。
+    void DrawAiGenerate(const ThemeColors& colors);
+    D2D1_RECT_F AiGeneratePanelRect() const;
+    D2D1_RECT_F AiGeneratePromptRect() const;
+    void OpenAiGenerate();
+    void CloseAiGenerate();
+    void StartAiGenerate();
+    // AI 后台任务完成通知：1=语音合成，2=图像生成，3=视频生成。
+    void OnAiTaskMessage(UINT kind);
+    void StartAiSpeechJob(const std::wstring& text);
     // 快捷键映射窗口。
     void DrawShortcutSettings(const ThemeColors& colors);
     D2D1_RECT_F ShortcutPanelRect() const;
@@ -300,6 +419,21 @@ private:
                          const std::wstring& value = std::wstring());
     void DrawEmptyShelf(const ThemeColors& colors);
     void DrawShelfSettings(const ThemeColors& colors);
+    // 局域网分享浮层：本机分享开关、地址展示、远端书单与下载。
+    void DrawLanShare(const ThemeColors& colors);
+    D2D1_RECT_F LanSharePanelRect() const;
+    D2D1_RECT_F LanShareListRect() const;
+    D2D1_RECT_F LanAddressInputRect() const;
+    void OpenLanShare();
+    void CloseLanShare();
+    void ToggleLanSharing();
+    void RefreshLanShareBooks();
+    void StartLanScan();
+    void StartLanFetch();
+    void StartLanDownload(int index);
+    // 后台网络任务完成：获取书单或下载书籍。
+    void OnLanJobDone();
+    void ImportLanBook(const std::wstring& path);
     void DrawCategoryManager(const ThemeColors& colors);
     void DrawCategorySidebar(const ThemeColors& colors);
     void DrawCategoryPicker(const ThemeColors& colors);
@@ -373,6 +507,28 @@ private:
     void DrawReaderScrollbar(const ThemeColors& colors);
     void AddBookmark();
     void RemoveBookmark(int bookmarkIndex);
+    // 固定页阅读的进度落盘：页序号写入书籍记录并保存。
+    void PersistFixedPageProgress();
+    // PDF 页面视图切换：单页与左右双页之间切换，并保存选择。
+    void TogglePdfPageLayout();
+    // 把设置中的 PDF 页面视图应用到当前已打开的固定页阅读器。
+    void ApplyPdfPageLayout();
+    // PDF 页面缩放：zoomIn 为 true 时放大，否则缩小；结果写入状态栏。
+    void ZoomPdfPage(bool zoomIn);
+
+    // PDF 页面文字选择：内嵌文本层直接使用，扫描页由系统 OCR 生成文字层。
+    // 固定页页面在窗口中的可用区域（DIP）。
+    D2D1_RECT_F PdfViewportRect() const;
+    // 落在页面上时开始选择并返回 true；页面没有可选文字时给出提示后同样返回 true。
+    bool BeginPdfSelection(float x, float y);
+    void UpdatePdfSelection(float x, float y);
+    void EndPdfSelection();
+    // 把当前选择写入剪贴板；没有选择时返回 false。
+    bool CopyPdfSelection();
+    // PDF 放大后的页面拖动：按住鼠标中键，或在页面空白处（或按住空格）用左键拖动。
+    bool BeginPdfPan(float x, float y);
+    void UpdatePdfPan(float x, float y);
+    void EndPdfPan();
     void RunSearch();
     void ApplySettings();
     void ChangePanel(PanelMode next);
@@ -396,6 +552,8 @@ private:
     void MoveInputCaret(int direction, bool extend);
     bool HandleInputKey(WPARAM key, bool controlPressed, bool shiftPressed);
     void BeginInputSelection(float x, float y);
+    // 正文字流中当前选中的文本；没有选择时为空。
+    std::wstring SelectedReaderText() const;
     void UpdateInputSelection(float x, float y);
     void DrawInputSelection(const D2D1_RECT_F& textRect, IDWriteTextFormat* format, bool wrap,
                             const ThemeColors& colors);
@@ -425,22 +583,26 @@ private:
     // AI 对话：OpenAI 兼容接口的流式请求。
     void SendAiMessage();
     void StartAiRequest(const std::wstring& prompt);
-    // 用已有会话历史发起一次请求（不追加用户消息），供自动读取章节后追问。
-    void LaunchAiRequest(std::vector<std::pair<std::wstring, std::wstring>> history);
-    // 阅读助手的系统提示：身份、书籍信息、当前阅读位置与可用控制命令。
+    // 就当前选中的文字向阅读助手提问：每次新建对话，避免与旧上下文混淆。
+    void AskAssistantWithSelection();
+    // 用当前会话与隐藏的数据上下文发起一次请求，不追加可见的用户消息。
+    void LaunchAiRequest();
+    // 阅读助手的系统提示：身份、书籍信息与当前阅读位置；正文与目录不预先发送。
     std::wstring BuildAiSystemPrompt() const;
-    // 解析回复中的控制命令并执行，cleaned 为去掉命令后的展示文本。
-    struct AiReadRange {
-        bool valid = false;
-        uint32_t start = 0;
-        uint32_t length = 0;
+    // 模型在回复中请求的数据：章节目录或正文区间，由程序在对话内部提供。
+    // 正文可以是一段或多段，每段记录起始偏移与字符数，总量在组装上下文时限制。
+    struct AiDataRequest {
+        bool toc = false;
+        std::vector<std::pair<uint32_t, uint32_t>> ranges;
     };
+    // 解析回复中的控制命令与数据请求，执行控制命令，cleaned 为去掉命令后的展示文本。
     void ProcessAiCommands(const std::wstring& reply, std::wstring& cleaned,
-                           AiReadRange& readRange);
-    void ExecuteAiCommand(const std::wstring& body, AiReadRange& readRange);
+                           AiDataRequest& request);
+    void ExecuteAiCommand(const std::wstring& body, AiDataRequest& request);
+    // 把请求的章节目录或正文整理成隐藏上下文，供同一轮对话继续使用。
+    std::wstring BuildAiDataContext(const AiDataRequest& request) const;
     void AddAiHighlight(uint32_t globalStart, uint32_t length, const std::wstring& color);
     void AddAiNote(uint32_t globalStart, uint32_t length, const std::wstring& text);
-    void StartAiFollowUp(uint32_t start, uint32_t length);
     void StopAiRequest();
     // 连续对话：按历史消息（角色, 内容）构造请求，保序发送。
     void RunAiRequest(std::wstring url, std::wstring apiKey, std::wstring model,
@@ -449,10 +611,12 @@ private:
     void PushAiChunk(const std::wstring& text, HWND target);
     // 思考内容增量（reasoning_content / thinking_delta）。
     void PushAiThinking(const std::wstring& text, HWND target);
+    // 流式返回中的 token 用量；输入、缓存命中、输出分别累加。
+    void PushAiUsage(int inputTokens, int cachedTokens, int outputTokens, HWND target);
     void PushAiDone(const std::wstring& status, HWND target);
     void AppendAiChunks();
-    // 把当前流式回复作为 assistant 消息写入会话并保存。
-    void CommitAiAnswer(bool allowFollowUp);
+    // 提交当前流式回复；若回复请求了章节数据，则在同一轮内继续请求并返回 true。
+    bool CommitAiAnswer();
     void BeginSelection(float x, float y);
     void UpdateSelection(float x, float y);
     void ClearSelection();
@@ -500,6 +664,8 @@ private:
 
     std::wstring activeBookId_;
     umd::Book activeBook_;
+    // 固定页阅读器：仅当书籍为无文本层 PDF 时打开，其余格式使用文本流排版。
+    reader::FixedPageReader fixedPages_;
     std::wstring activeChapterRaw_;
     ChapterDisplay chapterDisplay_;
     ChapterPager pager_;
@@ -534,6 +700,14 @@ private:
     uint32_t lineOffset_ = 0;       // 行滚动模式视口顶部对应的显示文本偏移
     bool scrollDragging_ = false;   // 正在拖动阅读进度滑块
     float lastScrollRatio_ = 0.0f;  // 滑块拖动时的上一次比例，用于节流
+    // PDF 页面上正在拖动选择文字。
+    bool pdfSelecting_ = false;
+    // PDF 放大后正在拖动页面。
+    bool pdfPanning_ = false;
+    float pdfPanLastX_ = 0.0f;
+    float pdfPanLastY_ = 0.0f;
+    // 目录树中被折叠的父章节下标。
+    std::unordered_set<int> collapsedChapters_;
     D2D1_RECT_F pageLayoutRect_{};
     bool pageLayoutValid_ = false;
     std::vector<AnnotationHit> annotationHits_;
@@ -572,6 +746,34 @@ private:
     size_t inputAnchor_ = 0;         // 选区锚点
     bool inputSelecting_ = false;    // 正在拖动选择
     bool shelfSettingsVisible_ = false;  // 书架设置浮层（文件关联）
+    // 局域网分享浮层与服务端、连接任务状态。
+    bool lanShareVisible_ = false;
+    bool lanSharing_ = false;
+    bool lanAddressFocused_ = false;
+    std::wstring lanAddressDraft_;
+    std::wstring lanStatus_;
+    // 本机局域网地址在打开浮层或开启分享时刷新，避免每次重绘都枚举网卡。
+    std::vector<std::wstring> lanLocalAddresses_;
+    std::vector<net::RemoteBook> lanRemoteBooks_;
+    // 扫描发现的设备地址，以及列表区域当前显示设备还是书籍。
+    std::vector<std::wstring> lanDiscoveredHosts_;
+    bool lanShowDevices_ = false;
+    // 当前实际对外分享的书籍数量（来源文件存在且可读取）。
+    size_t lanSharedBookCount_ = 0;
+    float lanListScroll_ = 0.0f;
+    float lanListScrollMax_ = 0.0f;
+    std::unique_ptr<net::LanShareServer> lanServer_;
+    bool lanJobRunning_ = false;
+    std::thread lanThread_;
+    std::mutex lanMutex_;
+    bool lanJobDone_ = false;
+    bool lanJobSucceeded_ = false;
+    int lanJobKind_ = 0;  // 1=获取书单，2=下载书籍，3=扫描局域网
+    std::wstring lanJobError_;
+    std::wstring lanJobDownloadPath_;
+    std::vector<net::RemoteBook> lanJobBooks_;
+    std::vector<std::wstring> lanJobHosts_;
+    std::atomic<bool> lanCancel_{false};
     bool categoryManagerVisible_ = false;  // 分类管理浮层
     std::wstring shelfFilterCategory_;   // 空=全部；__none__=未分类；否则分类 id
     std::wstring categoryDraft_;         // 分类名称输入
@@ -579,11 +781,33 @@ private:
     std::wstring shelfCategoryPickerBookId_;  // 非空表示正在为该书籍选择分类
     bool shelfSearchFocused_ = false;         // 书架正则搜索框是否获得焦点
     std::wstring shelfSearchQuery_;           // 书架正则搜索输入内容
+    // 阅读升级状态：成就浮层、月历显示月份与阅读计时。
+    bool readingAchievementsVisible_ = false;
+    int readingCalendarYear_ = 0;
+    int readingCalendarMonth_ = 1;
+    uint64_t readingTickMs_ = 0;
+    uint64_t readingPendingMs_ = 0;
+    uint64_t readingUnsavedSeconds_ = 0;
+    data::ReadingBadgeResult readingBadges_;
+    // 按月份保存的阅读记录：每日每本书与章节的阅读明细。
+    data::ReadingLogStore readingLog_;
+    // 当前章节的有效阅读累计；切换书籍或章节时结算一次阅读次数。
+    std::wstring readingStatBookId_;
+    int readingStatChapter_ = -1;
+    uint32_t readingStatChapterSeconds_ = 0;
     ComPtr<ISpVoice> voice_;         // 语音合成引擎
     bool speaking_ = false;          // 是否正在朗读
 
     ChatFocus chatFocus_ = ChatFocus::None;
     bool aiSettingsVisible_ = false;  // AI 接口设置弹框是否打开
+    // 打开 AI 设置时的快照：未点「保存」直接关闭则回滚，避免编辑内容悄悄生效。
+    bool aiSettingsHasSnapshot_ = false;
+    std::vector<data::AiChatConfig> aiSettingsChatSnapshot_;
+    std::wstring aiSettingsActiveChatSnapshot_;
+    data::AiServiceConfig aiSettingsSpeechSnapshot_;
+    data::AiServiceConfig aiSettingsImageSnapshot_;
+    data::AiServiceConfig aiSettingsVideoSnapshot_;
+    std::wstring aiSettingsSpeechEngineSnapshot_;
     // 字体选择弹框状态与其列表滚动量。
     bool fontPickerVisible_ = false;
     float fontPickerScroll_ = 0.0f;
@@ -600,9 +824,11 @@ private:
     std::wstring activeChatSessionId_;
     float chatScroll_ = 0.0f;
     float chatScrollMax_ = 0.0f;
-    // 对话内容区滚动条拖动，以及阅读助手面板宽度调整。
+    // 对话内容区滚动条拖动，以及可调宽面板的当前宽度与拖动状态。
     bool chatScrollDragging_ = false;
     float chatPanelWidth_ = 372.0f;
+    float tocPanelWidth_ = 372.0f;
+    float bookmarksPanelWidth_ = 372.0f;
     bool chatPanelResizing_ = false;
     // 对话气泡内的文字选择：消息下标与选区起止（消息文本内偏移）。
     int chatSelectionMessage_ = -1;
@@ -616,14 +842,53 @@ private:
     float chatSessionPickerScroll_ = 0.0f;
     float chatSessionPickerScrollMax_ = 0.0f;
     bool aiStreaming_ = false;
-    // 每轮用户提问自动读取正文的轮数，达到上限后停止，避免命令循环。
-    int aiFollowUpCount_ = 0;
-    // 最近一次自动读取正文区间的结束偏移，用于模型只表达读取意向时的续读起点。
-    uint32_t aiLastReadEnd_ = 0;
+    // 当前请求实际使用的接口配置快照；回复写入会话时据此记录来源。
+    std::wstring aiRequestConfigId_;
+    std::wstring aiRequestConfigName_;
+    std::wstring aiRequestModel_;
+    // 本轮对话的隐藏上下文：模型请求的章节数据，只随请求发送，不写入会话也不显示。
+    std::vector<std::pair<std::wstring, std::wstring>> aiTurnContext_;
+    // 本轮对话为满足数据请求而追加的请求轮数，达到上限后停止。
+    int aiRoundCount_ = 0;
+    // 当前一轮回复的 token 统计：输入、缓存命中、输出。
+    int aiInputTokens_ = 0;
+    int aiCachedTokens_ = 0;
+    int aiOutputTokens_ = 0;
+    // AI 设置中上下文窗口上限的编辑缓冲。
+    std::wstring aiContextTokensDraft_;
+    // AI 语音合成任务。
+    bool aiSpeechLoading_ = false;
+    std::atomic<bool> aiSpeechCancel_{false};
+    std::thread aiSpeechThread_;
+    std::mutex aiSpeechMutex_;
+    std::wstring aiSpeechPendingResult_;
+    std::wstring aiSpeechPendingError_;
+    bool aiSpeechDone_ = false;
+    // AI 设置当前分页：0=对话接口，1=语音合成，2=图像生成，3=视频生成。
+    int aiSettingsTab_ = 0;
+    // AI 图像/视频生成弹框与后台任务。
+    bool aiGenerateVisible_ = false;
+    int aiGenerateTab_ = 0;  // 0=图像，1=视频
+    std::wstring aiGeneratePrompt_;
+    std::wstring aiGenerateStatus_;
+    std::wstring aiGenerateResult_;
+    ComPtr<ID2D1Bitmap> aiGeneratePreview_;
+    std::wstring aiGeneratePreviewPath_;
+    bool aiGenerateBusy_ = false;
+    std::atomic<bool> aiGenerateCancel_{false};
+    std::thread aiGenerateThread_;
+    std::mutex aiGenerateMutex_;
+    std::wstring aiGeneratePendingResult_;
+    std::wstring aiGeneratePendingError_;
+    bool aiGenerateDone_ = false;
+    int aiGeneratePendingKind_ = 0;
     std::thread aiThread_;
     std::mutex aiMutex_;
     std::wstring aiPendingText_;
     std::wstring aiPendingStatus_;
+    int aiPendingInputTokens_ = 0;
+    int aiPendingCachedTokens_ = 0;
+    int aiPendingOutputTokens_ = 0;
     bool aiPendingDone_ = false;
     std::atomic<bool> aiCancel_{false};
     std::wstring startupNotice_;  // 数据目录回退或索引重建等非致命提示，首帧展示

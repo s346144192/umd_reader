@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>云栖镇 · 小镇渲染演示</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background-color: #ece4d5;
+    color: #2f3a32;
+    font-family: "Microsoft YaHei UI";
+    font-size: 15px;
+    line-height: 1.75;
+  }
+  .page { padding: 34px 40px 46px 40px; }
+
+  .seal {
+    display: inline-block;
+    width: 26px; height: 26px;
+    line-height: 26px;
+    text-align: center;
+    background-color: #b1542f;
+    color: #fff9ef;
+    font-size: 14px;
+    border-radius: 6px;
+    margin-right: 8px;
+  }
+  .eyebrow {
+    display: inline-block;
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: #8a7457;
+  }
+  h1 {
+    font-size: 42px;
+    line-height: 1.25;
+    letter-spacing: 8px;
+    margin: 12px 0 4px 0;
+    color: #2c3a2f;
+  }
+  .lede { margin: 0; color: #6d6251; font-size: 15px; letter-spacing: 0.5px; }
+  .rule {
+    width: 92px; height: 3px;
+    background-color: #b1542f;
+    border-radius: 2px;
+    margin: 18px 0 0 0;
+  }
+
+  .map-frame {
+    margin: 22px 0 0 0;
+    border: 1px solid #c9bca6;
+    border-radius: 16px;
+    background-color: #fdf8ed;
+  }
+  canvas#town { border-radius: 16px; }
+
+  .map-bar { margin: 12px 0 0 0; }
+  button {
+    background-color: #34513e;
+    color: #fffdf6;
+    border: 0;
+    border-radius: 8px;
+    padding: 7px 16px;
+    font-size: 14px;
+    margin: 0 8px 8px 0;
+  }
+  button.ghost {
+    background-color: #fffdf6;
+    color: #34513e;
+    border: 1px solid #bfb19a;
+  }
+  button.active {
+    background-color: #b1542f;
+    color: #fff9ef;
+  }
+  .badge {
+    display: inline-block;
+    background-color: #efe4cf;
+    color: #7a5a32;
+    border-radius: 11px;
+    padding: 2px 11px;
+    font-size: 12px;
+    margin: 0 8px 8px 0;
+  }
+  .map-note { margin: 4px 0 0 0; font-size: 13px; color: #7b705d; }
+
+  .panel {
+    background-color: #fffdf6;
+    border: 1px solid #d9cfbd;
+    border-left: 4px solid #b1542f;
+    border-radius: 12px;
+    padding: 16px 22px;
+    margin: 22px 0 0 0;
+  }
+  h2 {
+    font-size: 18px;
+    margin: 0 0 8px 0;
+    color: #7a3d22;
+    letter-spacing: 1px;
+  }
+  p { margin: 0 0 8px 0; text-align: justify; }
+  .note { font-size: 13px; color: #827665; }
+
+  table.ledger {
+    width: 100%;
+    border-collapse: collapse;
+    border-spacing: 0;
+    margin: 10px 0 2px 0;
+  }
+  caption {
+    font-size: 13px;
+    color: #7a6e5c;
+    padding: 0 0 8px 0;
+    letter-spacing: 1px;
+  }
+  th, td { border: 1px solid #dbd0bc; padding: 7px 12px; font-size: 14px; }
+  th { background-color: #efe6d4; color: #5b4a38; font-weight: bold; text-align: left; }
+  td.num { text-align: right; }
+  tr:nth-child(even) td { background-color: #faf7f1; }
+  .tag {
+    display: inline-block;
+    background-color: #e7eedd;
+    color: #3f5a36;
+    border-radius: 4px;
+    padding: 0 6px;
+    font-size: 12px;
+  }
+
+  .form-line { margin: 10px 0 0 0; }
+  label { margin-right: 6px; font-size: 14px; }
+  input[type="text"] {
+    width: 150px;
+    border: 1px solid #c9bda9;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background-color: #ffffff;
+    font-size: 14px;
+    margin-right: 14px;
+  }
+  select {
+    border: 1px solid #c9bda9;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background-color: #ffffff;
+    font-size: 14px;
+    margin-right: 14px;
+  }
+  label.check { margin-right: 14px; }
+  .form-note { font-size: 13px; color: #7b705d; margin-left: 6px; }
+  ul.guest-list {
+    margin: 10px 0 0 0;
+    padding-left: 30px;
+    font-size: 13px;
+    color: #6a5e4c;
+  }
+  ul.square { list-style-type: square; margin: 8px 0 2px 0; padding-left: 30px; }
+  li { margin: 2px 0; }
+
+  .footnote {
+    margin: 24px 0 0 0;
+    font-size: 12px;
+    color: #8f8371;
+    letter-spacing: 1px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="seal">云</div><span class="eyebrow">UMD RENDER DEMO · 03</span>
+  <h1>云栖镇</h1>
+  <p class="lede">一条河、一条老街、一座钟楼，和愿意慢下来的日子。</p>
+  <div class="rule"></div>
+
+  <div class="map-frame">
+    <canvas id="town" width="818" height="452"></canvas>
+  </div>
+  <div class="map-bar">
+    <button id="phase-dawn" class="ghost">清晨</button>
+    <button id="phase-day" class="ghost">正午</button>
+    <button id="phase-night" class="ghost">夜晚</button>
+    <span class="badge" id="phase-badge">清晨 · 薄雾未散</span>
+  </div>
+  <p class="map-note" id="phase-note">河面起了薄雾，钟楼刚敲过六下。点击上方按钮切换小镇的时辰。</p>
+
+  <div class="panel">
+    <h2>镇务公示</h2>
+    <p class="note">镇公所把本周的安排写在这张表上，路过的人都能看明白。</p>
+    <table class="ledger">
+      <caption>云栖镇 · 本周镇务</caption>
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>时辰</th>
+          <th>事项</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td rowspan="2">周一</td>
+          <td>上午</td>
+          <td>河道清淤，渡口暂停摆渡</td>
+        </tr>
+        <tr>
+          <td>下午</td>
+          <td>老槐树下修整石凳</td>
+        </tr>
+        <tr>
+          <td>周三</td>
+          <td>全天</td>
+          <td>河岸集市 <span class="tag">竹编 · 米酒</span></td>
+        </tr>
+        <tr>
+          <td>周五</td>
+          <td colspan="2">露天电影《小镇的春天》，日落后开场</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>留言簿</h2>
+    <p class="note">在镇公所盖一枚印章，写下你的名字与落脚处。</p>
+    <div class="form-line">
+      <label for="visitor">署名</label>
+      <input id="visitor" type="text" value="旅人">
+      <label for="district">落脚处</label>
+      <select id="district">
+        <option>河岸</option>
+        <option selected>老街</option>
+        <option>山腰</option>
+      </select>
+      <label class="check"><input id="postcard" type="checkbox" checked> 寄一张明信片</label>
+    </div>
+    <div class="form-line">
+      <button id="stamp">盖章留念</button>
+      <span class="badge" id="visitor-count">今日 12 位访客</span>
+      <span class="form-note" id="visitor-out">还没有盖章。</span>
+    </div>
+    <ul class="guest-list" id="guest-list"></ul>
+  </div>
+
+  <div class="panel">
+    <h2>散步路线</h2>
+    <p>从渡口出发，沿河巷往北，经过钟楼与集市，最后在老槐树下坐一会儿。</p>
+    <ul class="square">
+      <li>渡口：清晨有雾，石阶上能听见水声。</li>
+      <li>钟楼：整点会敲钟，檐下挂着风铃。</li>
+      <li>河岸集市：周三最热闹，竹编与米酒都在这里。</li>
+      <li>老槐树：树下石凳是全镇最好的歇脚处。</li>
+    </ul>
+  </div>
+
+  <p class="footnote">云栖镇 · 自研 HTML5 + CSS 渲染引擎演示 · Canvas 2D · QuickJS</p>
+
+</div>
+
+<script>
+  var canvas = document.getElementById('town');
+  var ctx = canvas ? canvas.getContext('2d') : null;
+  var W = 818;
+  var H = 452;
+  var phase = 0;
+
+  var palettes = [
+    {
+      name: '清晨 · 薄雾未散',
+      note: '河面起了薄雾，钟楼刚敲过六下。点击上方按钮切换小镇的时辰。',
+      skyTop: '#f4ddc2', skyBottom: '#fdf6e6',
+      sun: '#f7c37a', sunCore: 'rgba(255, 240, 205, 0.95)',
+      sunMid: 'rgba(255, 214, 150, 0.35)',
+      cloud: 'rgba(255, 252, 240, 0.55)',
+      bird: '#8d7c66',
+      hillFar: '#b8c3ab', hillNear: '#93a77e',
+      grassTop: '#b7c98e', grassBottom: '#d8cf9d',
+      riverTop: '#9ec3c4', riverBottom: '#6c9fa8',
+      road: '#d9c8a5', roadEdge: '#c3ad84',
+      shadow: 'rgba(72, 82, 62, 0.18)',
+      wood: '#8d6748', sail: '#fbf3de',
+      window: '#5f7b82', windowFrame: '#f4ead6', windowLit: '#ffd98a',
+      roofDark: '#5c4a3c', roofWarm: '#a1543c',
+      wall: '#e9dcc2', wallCool: '#dcd5c4', wallWarm: '#e6cba7',
+      treeDark: '#5d7a51', treeLight: '#7f9c5f', trunk: '#6d543c',
+      labelBg: 'rgba(255, 250, 238, 0.72)', labelText: '#4e5a48',
+      lamp: '#ffdf9c', lampGlow: 'rgba(255, 218, 140, 0.0)',
+      ripple: 'rgba(255, 255, 255, 0.22)',
+      fog: 'rgba(255, 252, 242, 0.32)'
+    },
+    {
+      name: '正午 · 日光正好',
+      note: '太阳升到钟楼顶上，河岸集市的布棚被照得发亮。',
+      skyTop: '#a9d3e2', skyBottom: '#eef6ef',
+      sun: '#fff4cf', sunCore: 'rgba(255, 252, 228, 0.98)',
+      sunMid: 'rgba(255, 244, 195, 0.4)',
+      cloud: 'rgba(255, 255, 252, 0.7)',
+      bird: '#7b8c83',
+      hillFar: '#9fb8a3', hillNear: '#7f9b72',
+      grassTop: '#a9c47c', grassBottom: '#d3ca96',
+      riverTop: '#8bc0cc', riverBottom: '#5d93a6',
+      road: '#dccba7', roadEdge: '#c4ad83',
+      shadow: 'rgba(66, 76, 58, 0.2)',
+      wood: '#8a6344', sail: '#fdf6e4',
+      window: '#5b7d8a', windowFrame: '#f7eeda', windowLit: '#ffe5a6',
+      roofDark: '#57473a', roofWarm: '#9d5239',
+      wall: '#ecdfc4', wallCool: '#ddd7c7', wallWarm: '#e8cdaa',
+      treeDark: '#587848', treeLight: '#7da257', trunk: '#6d553d',
+      labelBg: 'rgba(255, 252, 240, 0.75)', labelText: '#465341',
+      lamp: '#ffdf9c', lampGlow: 'rgba(255, 218, 140, 0.0)',
+      ripple: 'rgba(255, 255, 255, 0.3)',
+      fog: 'rgba(255, 255, 255, 0.0)'
+    },
+    {
+      name: '夜晚 · 灯火沿河',
+      note: '窗户一盏盏亮起来，河面把灯火拉成细细的金线。',
+      skyTop: '#1d2b42', skyBottom: '#46556a',
+      sun: '#f4f0d8', sunCore: 'rgba(245, 242, 220, 0.9)',
+      sunMid: 'rgba(196, 210, 230, 0.22)',
+      cloud: 'rgba(150, 165, 190, 0.25)',
+      bird: '#5b6b7d',
+      hillFar: '#2f4055', hillNear: '#25364a',
+      grassTop: '#35472f', grassBottom: '#4c513a',
+      riverTop: '#2e4f66', riverBottom: '#1c3348',
+      road: '#5f5a48', roadEdge: '#494536',
+      shadow: 'rgba(10, 16, 24, 0.35)',
+      wood: '#54402f', sail: '#d8cfb4',
+      window: '#2b3c4a', windowFrame: '#8b8471', windowLit: '#ffd074',
+      roofDark: '#2e2822', roofWarm: '#5b3529',
+      wall: '#8d8169', wallCool: '#7d7868', wallWarm: '#9a7d5f',
+      treeDark: '#233b2b', treeLight: '#355438', trunk: '#3d3024',
+      labelBg: 'rgba(22, 32, 46, 0.72)', labelText: '#e6ddc5',
+      lamp: '#ffd98a', lampGlow: 'rgba(255, 210, 120, 0.28)',
+      ripple: 'rgba(255, 226, 170, 0.22)',
+      fog: 'rgba(180, 195, 220, 0.0)'
+    }
+  ];
+
+  var houses = [
+    { x: 42,  w: 96,  h: 92,  roof: 36, wall: 'wall',     chimney: true },
+    { x: 158, w: 72,  h: 68,  roof: 28, wall: 'wallCool', chimney: false },
+    { x: 252, w: 112, h: 116, roof: 42, wall: 'wallWarm', chimney: true, clock: true },
+    { x: 386, w: 82,  h: 82,  roof: 30, wall: 'wall',     chimney: false },
+    { x: 484, w: 128, h: 96,  roof: 34, wall: 'wallWarm', chimney: true, awning: true },
+    { x: 628, w: 86,  h: 74,  roof: 26, wall: 'wallCool', chimney: false },
+    { x: 730, w: 78,  h: 94,  roof: 32, wall: 'wall',     chimney: true }
+  ];
+  var trees = [130, 224, 366, 466, 604, 706, 812];
+  var lamps = [20, 230, 356, 470, 612, 806];
+
+  function drawCloud(x, y, scale, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 16 * scale, 0, Math.PI * 2);
+    ctx.arc(x + 20 * scale, y - 8 * scale, 22 * scale, 0, Math.PI * 2);
+    ctx.arc(x + 46 * scale, y, 16 * scale, 0, Math.PI * 2);
+    ctx.fillRect(x, y, 46 * scale, 16 * scale);
+    ctx.fill();
+  }
+
+  function drawTree(x, base, size, p) {
+    ctx.fillStyle = p.trunk;
+    ctx.fillRect(x - 3, base - size * 0.42, 6, size * 0.42);
+    ctx.fillStyle = p.treeDark;
+    ctx.beginPath();
+    ctx.arc(x - size * 0.2, base - size * 0.55, size * 0.26, 0, Math.PI * 2);
+    ctx.arc(x + size * 0.18, base - size * 0.6, size * 0.23, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = p.treeLight;
+    ctx.beginPath();
+    ctx.arc(x, base - size * 0.72, size * 0.24, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawWindow(x, y, width, height, p, lit) {
+    if (lit) {
+      var glow = ctx.createRadialGradient(x + width / 2, y + height / 2, 2,
+                                          x + width / 2, y + height / 2, 24);
+      glow.addColorStop(0, 'rgba(255, 208, 116, 0.34)');
+      glow.addColorStop(1, 'rgba(255, 208, 116, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(x + width / 2, y + height / 2, 24, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = p.windowFrame;
+    ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
+    ctx.fillStyle = lit ? p.windowLit : p.window;
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = p.windowFrame;
+    ctx.fillRect(x + width / 2 - 1, y, 2, height);
+    ctx.fillRect(x, y + height / 2 - 1, width, 2);
+  }
+
+  function drawHouse(house, p, night) {
+    var base = 366;
+    var top = base - house.h;
+    var wall = p[house.wall];
+
+    ctx.fillStyle = p.shadow;
+    ctx.save();
+    ctx.translate(house.x + house.w / 2, base + 4);
+    ctx.scale(1, 0.22);
+    ctx.beginPath();
+    ctx.arc(0, 0, house.w * 0.56, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle = wall;
+    ctx.fillRect(house.x, top, house.w, house.h);
+
+    var door_width = house.w > 90 ? 20 : 16;
+    ctx.fillStyle = p.roofDark;
+    ctx.fillRect(house.x + house.w / 2 - door_width / 2, base - 30, door_width, 30);
+
+    var window_count = house.w > 100 ? 3 : 2;
+    for (var index = 0; index < window_count; ++index) {
+      var window_width = 14;
+      var gap = (house.w - 24 - window_width * window_count) / (window_count - 1);
+      drawWindow(house.x + 12 + index * (window_width + gap), top + 22,
+                 window_width, 18, p, night);
+    }
+
+    if (house.awning) {
+      for (var stripe = 0; stripe < 5; ++stripe) {
+        ctx.fillStyle = stripe % 2 === 0 ? '#b1542f' : '#f2e4c8';
+        ctx.fillRect(house.x + 4 + stripe * (house.w - 8) / 5, top + 6,
+                     (house.w - 8) / 5, 10);
+      }
+    }
+
+    if (house.chimney) {
+      ctx.fillStyle = p.roofDark;
+      ctx.fillRect(house.x + house.w * 0.72, top - house.roof - 12, 11, 20);
+    }
+
+    ctx.fillStyle = house.awning ? p.roofWarm : p.roofDark;
+    ctx.beginPath();
+    ctx.moveTo(house.x - 8, top);
+    ctx.lineTo(house.x + house.w / 2, top - house.roof);
+    ctx.lineTo(house.x + house.w + 8, top);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = p.windowFrame;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(house.x - 8, top);
+    ctx.lineTo(house.x + house.w + 8, top);
+    ctx.stroke();
+
+    if (house.clock) {
+      var clock_x = house.x + house.w / 2;
+      var clock_y = top + 44;
+      var clock_radius = 13;
+      ctx.fillStyle = p.windowFrame;
+      ctx.beginPath();
+      ctx.arc(clock_x, clock_y, clock_radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = p.roofWarm;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(clock_x, clock_y, clock_radius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      var hour_angle = phase === 0 ? -Math.PI / 2 : (phase === 1 ? 0 : Math.PI * 0.75);
+      ctx.strokeStyle = p.roofDark;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(clock_x, clock_y);
+      ctx.lineTo(clock_x + Math.cos(hour_angle) * 8, clock_y + Math.sin(hour_angle) * 8);
+      ctx.stroke();
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(clock_x, clock_y);
+      ctx.lineTo(clock_x, clock_y - 10);
+      ctx.stroke();
+    }
+  }
+
+  function label(text, x, y, p) {
+    ctx.font = '13px Microsoft YaHei UI';
+    var width = ctx.measureText(text).width;
+    ctx.fillStyle = p.labelBg;
+    ctx.fillRect(x - 7, y - 16, width + 14, 22);
+    ctx.fillStyle = p.labelText;
+    ctx.fillText(text, x, y);
+  }
+
+  function drawScene(p) {
+    var night = phase === 2;
+
+    var sky = ctx.createLinearGradient(0, 0, 0, 320);
+    sky.addColorStop(0, p.skyTop);
+    sky.addColorStop(1, p.skyBottom);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    if (night) {
+      var stars = [[62, 38], [118, 74], [196, 42], [262, 88], [340, 48],
+                   [420, 70], [500, 36], [566, 92], [742, 44], [796, 96]];
+      for (var star = 0; star < stars.length; ++star) {
+        ctx.fillStyle = star % 2 === 0 ? 'rgba(244, 240, 214, 0.85)' : 'rgba(244, 240, 214, 0.5)';
+        ctx.beginPath();
+        ctx.arc(stars[star][0], stars[star][1], star % 3 === 0 ? 1.6 : 1.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    var sun_x = phase === 0 ? 620 : (phase === 1 ? 660 : 676);
+    var sun_y = phase === 0 ? 128 : (phase === 1 ? 74 : 82);
+    var sun_r = phase === 1 ? 30 : 24;
+
+    var glow = ctx.createRadialGradient(sun_x, sun_y, 4, sun_x, sun_y, sun_r * 4.2);
+    glow.addColorStop(0, p.sunCore);
+    glow.addColorStop(0.3, p.sunMid);
+    glow.addColorStop(1, 'rgba(255, 220, 150, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(sun_x, sun_y, sun_r * 4.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = p.sun;
+    ctx.beginPath();
+    ctx.arc(sun_x, sun_y, sun_r, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (!night) {
+      drawCloud(92, 66, 1.0, p.cloud);
+      drawCloud(300, 112, 0.72, p.cloud);
+      drawCloud(538, 52, 0.85, p.cloud);
+      ctx.strokeStyle = p.bird;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(386, 64);
+      ctx.lineTo(394, 58);
+      ctx.lineTo(402, 64);
+      ctx.moveTo(430, 84);
+      ctx.lineTo(437, 78);
+      ctx.lineTo(444, 84);
+      ctx.moveTo(462, 58);
+      ctx.lineTo(468, 53);
+      ctx.lineTo(474, 58);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = p.hillFar;
+    ctx.beginPath();
+    ctx.moveTo(0, 246);
+    ctx.quadraticCurveTo(128, 172, 258, 238);
+    ctx.quadraticCurveTo(384, 186, 520, 232);
+    ctx.quadraticCurveTo(660, 168, 818, 226);
+    ctx.lineTo(818, 330);
+    ctx.lineTo(0, 330);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = p.hillNear;
+    ctx.beginPath();
+    ctx.moveTo(0, 298);
+    ctx.quadraticCurveTo(118, 250, 260, 292);
+    ctx.quadraticCurveTo(430, 242, 606, 286);
+    ctx.quadraticCurveTo(722, 254, 818, 278);
+    ctx.lineTo(818, 340);
+    ctx.lineTo(0, 340);
+    ctx.closePath();
+    ctx.fill();
+
+    var ground = ctx.createLinearGradient(0, 288, 0, 380);
+    ground.addColorStop(0, p.grassTop);
+    ground.addColorStop(1, p.grassBottom);
+    ctx.fillStyle = ground;
+    ctx.fillRect(0, 300, W, 84);
+
+    if (p.fog !== 'rgba(255, 255, 255, 0.0)') {
+      ctx.fillStyle = p.fog;
+      ctx.fillRect(0, 286, W, 34);
+    }
+
+    ctx.fillStyle = p.road;
+    ctx.fillRect(0, 350, W, 18);
+    ctx.fillStyle = p.roadEdge;
+    ctx.fillRect(0, 350, W, 2);
+    ctx.fillStyle = p.roadEdge;
+    for (var dash = 0; dash < W; dash += 34) {
+      ctx.fillRect(dash, 358, 16, 2);
+    }
+
+    for (var tree = 0; tree < trees.length; ++tree) {
+      drawTree(trees[tree], 362, 54 + (tree % 3) * 12, p);
+    }
+
+    for (var house = 0; house < houses.length; ++house) {
+      drawHouse(houses[house], p, night);
+    }
+
+    for (var lamp = 0; lamp < lamps.length; ++lamp) {
+      var lamp_x = lamps[lamp];
+      ctx.fillStyle = p.roofDark;
+      ctx.fillRect(lamp_x - 1, 332, 3, 30);
+      ctx.fillStyle = p.lamp;
+      ctx.beginPath();
+      ctx.arc(lamp_x, 330, 4, 0, Math.PI * 2);
+      ctx.fill();
+      if (night) {
+        var lamp_glow = ctx.createRadialGradient(lamp_x, 330, 2, lamp_x, 330, 26);
+        lamp_glow.addColorStop(0, p.lampGlow);
+        lamp_glow.addColorStop(1, 'rgba(255, 210, 120, 0)');
+        ctx.fillStyle = lamp_glow;
+        ctx.beginPath();
+        ctx.arc(lamp_x, 330, 26, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    var river = ctx.createLinearGradient(0, 372, 0, H);
+    river.addColorStop(0, p.riverTop);
+    river.addColorStop(1, p.riverBottom);
+    ctx.fillStyle = river;
+    ctx.beginPath();
+    ctx.moveTo(0, 378);
+    ctx.bezierCurveTo(180, 366, 332, 388, 474, 376);
+    ctx.bezierCurveTo(618, 364, 710, 384, 818, 372);
+    ctx.lineTo(818, H);
+    ctx.lineTo(0, H);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = p.ripple;
+    ctx.lineWidth = 2;
+    for (var ripple = 0; ripple < 4; ++ripple) {
+      var ripple_y = 402 + ripple * 13;
+      ctx.beginPath();
+      ctx.moveTo(24 + ripple * 42, ripple_y);
+      ctx.bezierCurveTo(120 + ripple * 40, ripple_y - 4,
+                        220 + ripple * 40, ripple_y + 4,
+                        350 + ripple * 40, ripple_y);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = p.wood;
+    ctx.fillRect(22, 370, 88, 5);
+    ctx.fillRect(30, 374, 6, 34);
+    ctx.fillRect(94, 374, 6, 34);
+    for (var plank = 0; plank < 4; ++plank) {
+      ctx.fillStyle = p.wood;
+      ctx.fillRect(34 + plank * 20, 382, 15, 4);
+    }
+
+    ctx.fillStyle = p.shadow;
+    ctx.save();
+    ctx.translate(650, 406);
+    ctx.scale(1, 0.24);
+    ctx.beginPath();
+    ctx.arc(0, 6, 46, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle = p.wood;
+    ctx.beginPath();
+    ctx.moveTo(614, 400);
+    ctx.quadraticCurveTo(650, 414, 690, 400);
+    ctx.quadraticCurveTo(668, 410, 644, 410);
+    ctx.quadraticCurveTo(628, 410, 614, 400);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = p.wood;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(652, 404);
+    ctx.lineTo(652, 366);
+    ctx.stroke();
+    ctx.fillStyle = p.sail;
+    ctx.beginPath();
+    ctx.moveTo(654, 368);
+    ctx.lineTo(654, 396);
+    ctx.lineTo(678, 394);
+    ctx.closePath();
+    ctx.fill();
+
+    if (night) {
+      ctx.fillStyle = p.lamp;
+      ctx.beginPath();
+      ctx.arc(652, 364, 3, 0, Math.PI * 2);
+      ctx.fill();
+      var boat_glow = ctx.createRadialGradient(652, 364, 2, 652, 364, 22);
+      boat_glow.addColorStop(0, 'rgba(255, 214, 130, 0.3)');
+      boat_glow.addColorStop(1, 'rgba(255, 214, 130, 0)');
+      ctx.fillStyle = boat_glow;
+      ctx.beginPath();
+      ctx.arc(652, 364, 22, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    label('镇公所', 262, 348, p);
+    label('渡口', 26, 366, p);
+    label('河岸集市', 494, 344, p);
+  }
+
+  function setupPhase() {
+    var buttons = [
+      document.getElementById('phase-dawn'),
+      document.getElementById('phase-day'),
+      document.getElementById('phase-night')
+    ];
+    var badge = document.getElementById('phase-badge');
+    var note = document.getElementById('phase-note');
+
+    function selectPhase(next) {
+      phase = next;
+      var palette = palettes[phase];
+      drawScene(palette);
+      if (badge) {
+        badge.textContent = palette.name;
+      }
+      if (note) {
+        note.textContent = palette.note;
+      }
+      for (var index = 0; index < buttons.length; ++index) {
+        if (buttons[index]) {
+          buttons[index].className = index === phase ? 'active' : 'ghost';
+        }
+      }
+    }
+
+    for (var index = 0; index < buttons.length; ++index) {
+      (function (value) {
+        if (buttons[value]) {
+          buttons[value].addEventListener('click', function () {
+            selectPhase(value);
+          });
+        }
+      })(index);
+    }
+
+    selectPhase(0);
+  }
+
+  function setupGuestbook() {
+    var visitor = document.getElementById('visitor');
+    var district = document.getElementById('district');
+    var postcard = document.getElementById('postcard');
+    var stamp = document.getElementById('stamp');
+    var output = document.getElementById('visitor-out');
+    var count = document.getElementById('visitor-count');
+    var list = document.getElementById('guest-list');
+    var visits = 12;
+
+    if (!stamp) {
+      return;
+    }
+
+    stamp.addEventListener('click', function () {
+      var name = visitor && visitor.value ? visitor.value : '无名旅人';
+      var place = district && district.value ? district.value : '老街';
+      var post = postcard && postcard.checked;
+      visits = visits + 1;
+      if (count) {
+        count.textContent = '今日 ' + visits + ' 位访客';
+      }
+      if (output) {
+        output.textContent = '印章已盖：' + name + '，落脚' + place + (post ? '，寄明信片。' : '。');
+      }
+      if (list) {
+        var entry = document.createElement('li');
+        entry.textContent = name + ' · ' + place + (post ? ' · 寄明信片' : '');
+        list.appendChild(entry);
+      }
+    });
+  }
+
+  if (ctx) {
+    setupPhase();
+    setupGuestbook();
+  }
+</script>
+</body>
+</html>

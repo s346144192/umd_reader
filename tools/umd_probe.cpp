@@ -47,16 +47,31 @@ std::wstring BuildPreview(const std::wstring& text, size_t limit) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) {
-        Print(L"用法：umd_probe <umd 文件路径>");
+    std::wstring chapterMode;
+    if (argc == 4 && std::wstring(argv[2]) == L"--mode") {
+        chapterMode = argv[3];
+    } else if (argc != 2) {
+        Print(L"用法：format_probe <文件路径> [--mode auto|hui|zhang|jie|jizhang|jizhangjie]");
         return 2;
     }
 
     umd::Book book;
     std::wstring error;
-    if (!umd::ParseFile(std::filesystem::path(argv[1]), book, error)) {
+    if (!umd::ParseBookFile(std::filesystem::path(argv[1]), book, error)) {
         Print(L"解析失败：" + error);
         return 1;
+    }
+    if (!chapterMode.empty()) {
+        // 按指定方式重新提取章节，用于核对多级目录。
+        const std::vector<umd::Chapter> chapters =
+            chapterMode == L"auto"
+                ? umd::DetectDefaultChapters(book.content)
+                : umd::DetectChaptersByUnits(book.content,
+                                             umd::ChapterUnitsForMode(chapterMode), true);
+        if (!chapters.empty()) {
+            book.chapters = chapters;
+        }
+        Print(L"章节提取方式：" + chapterMode);
     }
 
     Print(L"文件：" + std::wstring(argv[1]));
@@ -74,8 +89,9 @@ int wmain(int argc, wchar_t** argv) {
     const size_t chapterLimit = book.chapters.size() < 50 ? book.chapters.size() : 50;
     for (size_t i = 0; i < chapterLimit; ++i) {
         const umd::Chapter& chapter = book.chapters[i];
-        Print(L"  [" + std::to_wstring(i) + L"] 偏移 " + std::to_wstring(chapter.charOffset) +
-              L"，长度 " + std::to_wstring(chapter.charLength) + L"，标题 " + chapter.title);
+        Print(L"  [" + std::to_wstring(i) + L"] 层级 " + std::to_wstring(chapter.level) +
+              L"，偏移 " + std::to_wstring(chapter.charOffset) + L"，长度 " +
+              std::to_wstring(chapter.charLength) + L"，标题 " + chapter.title);
     }
     if (book.chapters.size() > chapterLimit) {
         Print(L"  …其余 " + std::to_wstring(book.chapters.size() - chapterLimit) + L" 个章节未显示");
@@ -86,6 +102,16 @@ int wmain(int argc, wchar_t** argv) {
                            : std::to_wstring(book.coverBytes.size()) + L" 字节（" +
                                  std::wstring(book.coverMimeType.begin(), book.coverMimeType.end()) + L"）"));
     Print(L"插图数量：" + std::to_wstring(book.images.size()));
+    if (!book.pdfPages.empty()) {
+        size_t textPages = 0;
+        for (const umd::PdfPageText& page : book.pdfPages) {
+            if (page.hasText) {
+                ++textPages;
+            }
+        }
+        Print(L"PDF 页面：" + std::to_wstring(book.pdfPages.size()) + L" 页，其中文本页 " +
+              std::to_wstring(textPages) + L" 页");
+    }
     Print(L"正文预览：" + BuildPreview(book.content, 200));
 
     if (!book.warnings.empty()) {

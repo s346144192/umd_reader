@@ -10,5 +10,10 @@ build/
 *.lib
 *.exp
 
+# 第三方 PDFium 的导入库是构建必需文件，需要纳入版本管理
+!third_party/pdfium/lib/*.lib
+
 # 运行数据（书架索引、书籍数据、背景图片）
 data/
+
+.screenshots/

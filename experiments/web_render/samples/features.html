@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>功能覆盖测试页</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #f6f3ec;
+    color: #2b2723;
+    font-family: "Microsoft YaHei UI";
+    font-size: 15px;
+    line-height: 1.7;
+    padding: 36px 44px;
+  }
+
+  h1 { font-size: 28px; line-height: 1.3; margin: 0 0 6px 0; color: #1d1a17; letter-spacing: 1px; }
+  h2 { font-size: 19px; margin: 26px 0 10px 0; color: #7a3d22; }
+  h3 { font-size: 15px; margin: 0 0 6px 0; color: #7a3d22; }
+  p { margin: 0 0 10px 0; text-align: justify; }
+  .sub { color: #6d6255; font-size: 13px; letter-spacing: 1px; }
+  .rule { height: 3px; width: 120px; background: #b1542f; border-radius: 2px; margin: 14px 0 0 0; }
+
+  /* CSS：层叠、选择器与单位 */
+  .panel {
+    background: #ffffff;
+    border: 1px solid #ddd3c4;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin: 10px 0 16px 0;
+  }
+  .panel p { margin: 0; }
+  #css-target { color: #7a3d22; font-size: 1.06rem; letter-spacing: 0.5px; }
+  .panel .note { color: #8a7f70; font-size: 13px; margin-top: 8px; }
+  div.panel div.deep { background: #efe8dc; padding: 10px 14px; border-radius: 8px; margin-top: 10px; }
+  div.panel div.deep span.mark { background: #f2ddc2; color: #7a3d22; padding: 0 4px; border-radius: 4px; }
+  a.link { color: #9c4a2b; }
+  em { font-style: italic; }
+  strong { font-weight: bold; }
+
+  ul, ol { margin: 0 0 12px 0; padding-left: 32px; }
+  ul.square { list-style-type: square; }
+  ul.circle { list-style-type: circle; }
+  ol.upper { list-style-type: upper-alpha; }
+  li { margin: 2px 0; }
+  li > ul { margin: 3px 0 0 0; padding-left: 24px; }
+
+  /* 表格 */
+  table {
+    border-collapse: collapse;
+    border-spacing: 0;
+    border: 1px solid #c9bda9;
+    border-radius: 8px;
+    margin: 8px 0 14px 0;
+  }
+  caption { font-size: 14px; color: #5b4a38; padding: 6px 0 8px 0; letter-spacing: 1px; }
+  th, td { border: 1px solid #d8ccb8; padding: 7px 12px; font-size: 14px; }
+  th { background: #efe8dc; color: #5b4a38; font-weight: bold; text-align: left; }
+  tr:nth-child(even) td { background: #faf7f1; }
+  .num { text-align: right; }
+
+  /* 表单 */
+  fieldset { border: 1px solid #d8ccb8; border-radius: 10px; padding: 12px 16px; margin: 0 0 14px 0; }
+  legend { color: #7a3d22; font-size: 14px; padding: 0 6px; }
+  label { margin-right: 6px; }
+  input[type="text"], input[type="password"] {
+    width: 180px; border: 1px solid #c9bda9; border-radius: 6px; padding: 4px 8px;
+    background: #ffffff; font-size: 14px; margin-right: 12px;
+  }
+  textarea { width: 260px; height: 60px; border: 1px solid #c9bda9; border-radius: 6px; padding: 6px 8px; background: #ffffff; font-size: 14px; }
+  select { border: 1px solid #c9bda9; border-radius: 6px; padding: 4px 8px; background: #ffffff; font-size: 14px; }
+  .check { margin-right: 14px; }
+  button {
+    background: #b1542f; color: #ffffff; border: 0; border-radius: 8px;
+    padding: 7px 16px; font-size: 14px; margin-right: 10px;
+  }
+  button.ghost { background: #ffffff; color: #9c4a2b; border: 1px solid #d8b7a5; }
+  input:disabled { background: #eee8dd; color: #9a9187; }
+
+  /* 框架与画布 */
+  iframe { border: 1px solid #c9bda9; border-radius: 10px; background: #ffffff; }
+  canvas { border: 1px solid #c9bda9; border-radius: 10px; background: #ffffff; }
+  .stage { margin: 8px 0 14px 0; }
+  .source-image { display: none; }
+
+  .event-box { background: #ffffff; border: 1px solid #ddd3c4; border-radius: 10px; padding: 14px 18px; margin: 8px 0 0 0; }
+  .event-out { color: #5b4a38; font-size: 14px; }
+  .badge { display: inline-block; background: #efe8dc; color: #7a3d22; border-radius: 10px; padding: 2px 10px; font-size: 12px; margin-left: 8px; }
+  .footnote { font-size: 12px; color: #8a7f70; margin-top: 20px; }
+</style>
+</head>
+<body>
+
+  <h1>功能覆盖测试</h1>
+  <div class="sub">CSS · 区块 · 列表 · 表格 · 表单 · 框架 · 事件 · Canvas</div>
+  <div class="rule"></div>
+
+  <h2>一、CSS 与区块</h2>
+  <div class="panel">
+    <p id="css-target">层叠与选择器：本段字号使用 rem，颜色由 ID 选择器命中。</p>
+    <p class="note">属性选择器与后代选择器：<span class="mark">高亮片段</span>、<a class="link" href="#">链接</a>、<em>斜体</em>、<strong>加粗</strong>。</p>
+    <div class="deep">
+      <p>嵌套区块：内边距、背景与圆角由父级盒模型分别绘制。</p>
+    </div>
+  </div>
+
+  <h2>二、列表</h2>
+  <ul class="square">
+    <li>方块标记列表项一。</li>
+    <li>嵌套层级：
+      <ul class="circle">
+        <li>圆点标记子项一。</li>
+        <li>圆点标记子项二。</li>
+      </ul>
+    </li>
+    <li>方块标记列表项三。</li>
+  </ul>
+  <ol class="upper">
+    <li>大写字母标记项一。</li>
+    <li>大写字母标记项二。</li>
+  </ol>
+
+  <h2>三、表格</h2>
+  <table>
+    <caption>功能覆盖统计</caption>
+    <thead>
+      <tr>
+        <th>章节</th>
+        <th>页数</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td rowspan="2">排版</td>
+        <td class="num">12</td>
+        <td>块级流与行内断行</td>
+      </tr>
+      <tr>
+        <td class="num">6</td>
+        <td>
+          <div>表格：跨行、跨列与间距</div>
+          <p>块级子元素递归参与列宽测量，并按块级流换行。</p>
+        </td>
+      </tr>
+      <tr>
+        <td>绘制</td>
+        <td class="num">8</td>
+        <td>圆角、边框与文字图集</td>
+      </tr>
+      <tr>
+        <td colspan="2">合计（跨两列）</td>
+        <td>两个图形后端</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>四、表单</h2>
+  <fieldset>
+    <legend>输入控件</legend>
+    <label for="name">姓名</label>
+    <input id="name" type="text" value="张三">
+    <span class="badge" id="js-echo">等待脚本读取</span>
+    <label for="pwd">口令</label>
+    <input id="pwd" type="password" value="secret">
+    <div class="stage">
+      <label class="check"><input type="checkbox" checked> 记住登录</label>
+      <span class="badge" id="check-state">记住登录：已选中</span>
+      <label class="check"><input type="radio" name="mode"> 模式甲</label>
+      <label class="check"><input type="radio" name="mode" checked> 模式乙</label>
+    </div>
+    <div class="stage">
+      <textarea>多行文本域
+第二行</textarea>
+    </div>
+    <div class="stage">
+      <select>
+        <option>选项甲</option>
+        <option selected>选项乙</option>
+        <option>选项丙</option>
+      </select>
+      <input type="text" value="禁用输入" disabled>
+      <button type="button">普通按钮</button>
+      <button type="button" class="ghost">次按钮</button>
+      <input type="submit" value="提交">
+      <input type="reset" value="重置">
+    </div>
+  </fieldset>
+
+  <h2>五、框架</h2>
+  <div class="stage">
+    <iframe src="frame_child.html" width="420" height="380"></iframe>
+  </div>
+
+  <h2>六、Canvas</h2>
+  <div class="stage">
+    <img id="cover-src" class="source-image" src="assets/cover.png" alt="画布图片来源">
+    <canvas id="cv" width="760" height="450"></canvas>
+  </div>
+
+  <h2>七、事件</h2>
+  <div class="event-box">
+    <button type="button" id="evt-btn">触发事件</button>
+    <span class="badge" id="evt-count">0 次</span>
+    <p class="event-out"><span id="evt-out">尚未收到事件。</span> <span id="js-key-out">尚未收到键盘事件。</span> <span id="js-change-out">尚未收到 change 事件。</span></p>
+  </div>
+
+  <div class="footnote">注：本页用于逐项核对引擎的功能覆盖与交互行为。</div>
+
+  <script>
+    var count = 0;
+    var button = document.getElementById('evt-btn');
+    var output = document.getElementById('evt-out');
+    var badge = document.getElementById('evt-count');
+    button.addEventListener('click', function () {
+      count = count + 1;
+      badge.textContent = count + ' 次';
+      output.textContent = '收到第 ' + count + ' 次点击事件，事件冒泡至按钮。';
+    });
+
+    // 姓名输入框：input 实时回显值，keydown 记录最后按键，change 记录失焦确认。
+    var nameInput = document.getElementById('name');
+    var echo = document.getElementById('js-echo');
+    var keyOutput = document.getElementById('js-key-out');
+    var changeOutput = document.getElementById('js-change-out');
+    var checkbox = document.querySelector('input[type="checkbox"]');
+    var checkboxLabel = document.getElementById('check-state');
+    if (nameInput && echo) {
+      // 页面加载时通过 value 属性读取初始值，证明属性读取可用。
+      echo.textContent = 'value=' + nameInput.value;
+      nameInput.addEventListener('input', function (event) {
+        echo.textContent = 'value=' + nameInput.value;
+        if (keyOutput) {
+          keyOutput.textContent = 'input 事件：target=' + event.target.tagName +
+            '，值=' + nameInput.value;
+        }
+      });
+      nameInput.addEventListener('keydown', function (event) {
+        if (keyOutput) {
+          keyOutput.textContent = '最后按键：' + event.key +
+            '（shift=' + event.shiftKey + '，ctrl=' + event.ctrlKey +
+            '，alt=' + event.altKey + '）';
+        }
+      });
+      nameInput.addEventListener('change', function () {
+        if (changeOutput) {
+          changeOutput.textContent = 'change 事件：值=' + nameInput.value;
+        }
+      });
+      nameInput.addEventListener('focus', function () {
+        if (keyOutput) {
+          keyOutput.textContent = 'focus 事件：姓名输入框获得焦点';
+        }
+      });
+      nameInput.addEventListener('blur', function () {
+        if (keyOutput) {
+          keyOutput.textContent = 'blur 事件：姓名输入框失去焦点';
+        }
+      });
+    }
+    if (checkbox) {
+      if (checkboxLabel) {
+        checkboxLabel.textContent = '记住登录：' + (checkbox.checked ? '已选中' : '未选中');
+      }
+      checkbox.addEventListener('change', function () {
+        if (checkboxLabel) {
+          checkboxLabel.textContent = '记住登录：' + (checkbox.checked ? '已选中' : '未选中');
+        }
+      });
+    }
+
+    var canvas = document.getElementById('cv');
+    if (canvas && typeof canvas.getContext === 'function') {
+      var ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#b1542f';
+        ctx.fillRect(10, 10, 120, 60);
+        ctx.fillStyle = '#4f6b52';
+        ctx.fillRect(150, 20, 80, 40);
+        ctx.strokeStyle = '#7a3d22';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(250, 15, 55, 50);
+        ctx.fillStyle = '#2b2723';
+        ctx.font = '16px Microsoft YaHei UI';
+        ctx.fillText('Canvas 2D 绘制', 20, 110);
+
+        // 线性渐变填充。
+        var linear = ctx.createLinearGradient(10, 120, 190, 160);
+        linear.addColorStop(0, '#b1542f');
+        linear.addColorStop(0.5, '#e8c27a');
+        linear.addColorStop(1, '#4f6b52');
+        ctx.fillStyle = linear;
+        ctx.fillRect(10, 120, 180, 40);
+
+        // 径向渐变填充与渐变描边。
+        var radial = ctx.createRadialGradient(520, 120, 8, 520, 120, 48);
+        radial.addColorStop(0, '#ffffff');
+        radial.addColorStop(0.6, '#e8c27a');
+        radial.addColorStop(1, '#b1542f');
+        ctx.fillStyle = radial;
+        ctx.fillRect(470, 80, 100, 80);
+        ctx.strokeStyle = linear;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(470, 80, 100, 80);
+
+        // 变换后绘制矩形：translate + rotate，随后 save/restore 验证状态恢复。
+        ctx.save();
+        ctx.translate(300, 250);
+        ctx.rotate(0.4);
+        ctx.fillStyle = '#7a3d22';
+        ctx.fillRect(-70, -30, 140, 60);
+        ctx.restore();
+
+        // 路径：折线与二次曲线，closePath 后填充并描边。
+        ctx.beginPath();
+        ctx.moveTo(10, 200);
+        ctx.lineTo(110, 200);
+        ctx.quadraticCurveTo(160, 150, 210, 200);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(79, 107, 82, 0.35)';
+        ctx.fill();
+        ctx.strokeStyle = '#4f6b52';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // 三次贝塞尔曲线描边。
+        ctx.beginPath();
+        ctx.moveTo(250, 200);
+        ctx.bezierCurveTo(300, 140, 390, 260, 450, 190);
+        ctx.strokeStyle = '#9c4a2b';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+
+        // 圆形：整圆弧线与逆时针部分弧线。
+        ctx.beginPath();
+        ctx.arc(640, 210, 55, 0, Math.PI * 2, false);
+        ctx.fillStyle = 'rgba(177, 84, 47, 0.5)';
+        ctx.fill();
+        ctx.strokeStyle = '#7a3d22';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(640, 210, 80, 0, Math.PI * 0.8, true);
+        ctx.strokeStyle = '#4f6b52';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 恢复变换后再绘制文字，确认状态栈生效。
+        ctx.save();
+        ctx.translate(20, 320);
+        ctx.scale(1.2, 1.2);
+        ctx.fillStyle = '#2b2723';
+        ctx.font = '16px Microsoft YaHei UI';
+        ctx.fillText('变换恢复后的文字', 0, 0);
+        ctx.restore();
+
+        // drawImage：页面中的 img 元素。
+        var cover = document.getElementById('cover-src');
+        if (cover) {
+          ctx.drawImage(cover, 560, 320, 180, 105);
+          // 九参数版本：裁剪源图局部后绘制。
+          ctx.drawImage(cover, 20, 30, 150, 100, 260, 355, 170, 90);
+        }
+
+        // drawImage：脚本创建的画布元素与其上下文。
+        var offscreen = document.createElement('canvas');
+        offscreen.setAttribute('width', '40');
+        offscreen.setAttribute('height', '40');
+        var offscreen_context = offscreen.getContext('2d');
+        if (offscreen_context) {
+          offscreen_context.fillStyle = '#e8c27a';
+          offscreen_context.fillRect(0, 0, 40, 40);
+          offscreen_context.fillStyle = '#7a3d22';
+          offscreen_context.fillRect(10, 10, 20, 20);
+        }
+        ctx.drawImage(offscreen, 20, 350, 70, 70);
+        ctx.drawImage(offscreen_context, 105, 350);
+      }
+    }
+  </script>
+</body>
+</html>

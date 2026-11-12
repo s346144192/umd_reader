@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #ffffff;
+    color: #2b2723;
+    font-family: "Microsoft YaHei UI";
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 14px 16px;
+  }
+  h3 { margin: 0 0 8px 0; color: #7a3d22; font-size: 16px; }
+  p { margin: 0 0 8px 0; }
+  .row { margin: 0 0 8px 0; }
+  img { width: 200px; height: 100px; border-radius: 6px; vertical-align: top; }
+  button {
+    background: #b1542f; color: #ffffff; border: 0; border-radius: 8px;
+    padding: 5px 14px; font-size: 14px;
+  }
+  iframe { width: 220px; height: 60px; border: 1px solid #c9bda9; border-radius: 8px; }
+  .status { color: #5b4a38; }
+</style>
+</head>
+<body>
+  <h3>子框架内容</h3>
+  <p class="status">脚本状态：<span id="frame-status">等待脚本</span></p>
+  <div class="row"><img src="assets/cover.png" alt="子框架图片"></div>
+  <div class="row"><button type="button" id="frame-btn">子框架按钮</button></div>
+  <div class="row"><input id="frame-input" type="text" value="子框架输入"></div>
+  <p class="status">输入状态：<span id="frame-input-state">等待输入</span></p>
+  <div class="row"><iframe src="frame_child.html" title="指向自身的框架"></iframe></div>
+  <script>
+    var frameStatus = document.getElementById('frame-status');
+    if (frameStatus) {
+      frameStatus.textContent = '子文档脚本已执行';
+    }
+    var frameButton = document.getElementById('frame-btn');
+    if (frameButton) {
+      frameButton.addEventListener('click', function () {
+        if (frameStatus) {
+          frameStatus.textContent = '子框架事件已触发';
+        }
+      });
+    }
+    var frameInput = document.getElementById('frame-input');
+    var frameInputState = document.getElementById('frame-input-state');
+    if (frameInput && frameInputState) {
+      frameInputState.textContent = 'value=' + frameInput.value;
+      frameInput.addEventListener('input', function () {
+        frameInputState.textContent = 'value=' + frameInput.value;
+      });
+      frameInput.addEventListener('keydown', function (event) {
+        frameInputState.textContent = '按键=' + event.key + '，value=' + frameInput.value;
+      });
+      frameInput.addEventListener('change', function () {
+        frameInputState.textContent = 'change，value=' + frameInput.value;
+      });
+    }
+  </script>
+</body>
+</html>

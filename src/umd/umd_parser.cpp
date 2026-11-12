@@ -737,15 +737,16 @@ bool MatchChapterHeading(const std::wstring& line, const std::vector<wchar_t>& u
 }
 
 std::vector<Chapter> DetectChapters(const std::wstring& text) {
-    return DetectChaptersByUnits(text, {L'章', L'回', L'节', L'卷', L'篇', L'幕'});
+    return DetectChaptersByUnits(text, {L'章', L'回', L'节', L'卷', L'篇', L'幕'}, false);
 }
 
 }  // namespace
 
 std::vector<Chapter> DetectChaptersByUnits(const std::wstring& text,
-                                           const std::vector<wchar_t>& units) {
+                                           const std::vector<wchar_t>& units,
+                                           bool hierarchical) {
     std::vector<Chapter> chapters;
-    if (text.empty() || units.empty() || units.size() > 3) {
+    if (text.empty() || units.empty() || (hierarchical && units.size() > 3)) {
         return chapters;
     }
 
@@ -767,8 +768,11 @@ std::vector<Chapter> DetectChaptersByUnits(const std::wstring& text,
         const std::wstring line = text.substr(lineStart, lineEnd - lineStart);
         if (MatchChapterHeading(line, units, unit)) {
             Heading heading;
-            heading.rank =
-                static_cast<int>(std::find(units.begin(), units.end(), unit) - units.begin());
+            // 自动识别时各单位的标题同级；多级模式按 units 顺序确定层级。
+            heading.rank = hierarchical
+                               ? static_cast<int>(std::find(units.begin(), units.end(), unit) -
+                                                  units.begin())
+                               : 0;
             heading.offset = static_cast<uint32_t>(lineStart);
             heading.title = TrimLine(line);
             headings.push_back(std::move(heading));
@@ -786,45 +790,13 @@ std::vector<Chapter> DetectChaptersByUnits(const std::wstring& text,
         return chapters;
     }
 
-    // 依据层级建立父子关系：父标题是其之前最近的更高层标题。
-    std::vector<int> parentOf(headings.size(), -1);
-    std::vector<int> stack;
+    // 每个标题都成为目录节点，按先序排列并记录层级；
+    // 父节点负责分组，子节点层级更高，目录按树形展开。
     for (size_t i = 0; i < headings.size(); ++i) {
-        while (!stack.empty() && headings[stack.back()].rank >= headings[i].rank) {
-            stack.pop_back();
-        }
-        parentOf[i] = stack.empty() ? -1 : stack.back();
-        stack.push_back(static_cast<int>(i));
-    }
-    std::vector<bool> hasChild(headings.size(), false);
-    for (size_t i = 0; i < headings.size(); ++i) {
-        if (parentOf[i] >= 0) {
-            hasChild[static_cast<size_t>(parentOf[i])] = true;
-        }
-    }
-
-    // 只有最深层标题成为章节；标题按「上级 · 本级」拼接，便于在扁平目录中区分层级。
-    for (size_t i = 0; i < headings.size(); ++i) {
-        if (hasChild[i]) {
-            continue;
-        }
-        std::vector<const std::wstring*> titles;
-        int cursor = static_cast<int>(i);
-        while (cursor >= 0) {
-            titles.push_back(&headings[static_cast<size_t>(cursor)].title);
-            cursor = parentOf[static_cast<size_t>(cursor)];
-        }
-        std::reverse(titles.begin(), titles.end());
-        std::wstring joined;
-        for (size_t k = 0; k < titles.size(); ++k) {
-            if (k > 0) {
-                joined += L" · ";
-            }
-            joined += *titles[k];
-        }
         Chapter chapter;
-        chapter.title = joined;
+        chapter.title = headings[i].title;
         chapter.charOffset = headings[i].offset;
+        chapter.level = static_cast<uint8_t>(std::min(headings[i].rank + 1, 9));
         chapters.push_back(std::move(chapter));
     }
     if (chapters.empty()) {
@@ -937,6 +909,9 @@ bool ParseBookFile(const std::filesystem::path& path, Book& book, std::wstring& 
     }
     if (extension == L".txt") {
         return ParseTextFile(path, book, error);
+    }
+    if (extension == L".pdf") {
+        return ParsePdfFile(path, book, error);
     }
     return ParseFile(path, book, error);
 }
